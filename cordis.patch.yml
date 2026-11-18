@@ -43,6 +43,7 @@
               eventPort: 3422
               batchWindowMs: 500
               maxBodyBytes: 1048576
+              luaCommand: lua
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
@@ -60,7 +61,8 @@
                 6. 服务异常时先跑 mc_status 自检。
 
                 事件
-                - 需要游戏里正在发生的事（受伤、死亡、捡到物品、聊天、Baritone 结束、维度切换等）时，先 get_mc_event_types 看字段，再用 subscribe_mc_event 订阅；事件会作为新消息到达，不要轮询。
+                - 需要游戏里正在发生的事（受伤、死亡、捡到物品、聊天、Baritone 结束、维度切换等）时，先 get_mc_event_types 看字段，再用 subscribe_mc_event 订阅；common 模式下事件会作为新消息到达，不要轮询。
+                - 需要自定义过滤或自动操作时用 mode:"advanced" 并提供 lua_script：事件送入常驻 Lua 脚本，脚本调用 send/forward 才会通知你，也可用 mc.get/mc.post 操作游戏。
                 - 不再需要监控时用 subscribe_mc_event({action:"stop"}) 停止。
 
                 任务
@@ -115,6 +117,7 @@
               eventPort: 3422
               batchWindowMs: 500
               maxBodyBytes: 1048576
+              luaCommand: lua
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:

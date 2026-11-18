@@ -1,9 +1,9 @@
 {
   "name": "dsh-mc-connect",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
-  "description": "DSH 单包 Minecraft 直连：注册「MC 模式」与「MC 模式+」，原生提供 mc_* 控制/观测工具与 MC 事件订阅，不经过 MCP server。",
+  "description": "DSH 单包 Minecraft 直连：注册「MC 模式」与「MC 模式+」，原生提供 mc_* 控制/观测工具与 MC 事件订阅（普通投递或 Lua 高级处理），不经过 MCP server。",
   "exports": {
     ".": "./index.js",
     "./tools": "./tools.js",
@@ -19,6 +19,7 @@
     "filter.js",
     "bridge.js",
     "events.js",
+    "lua.js",
     "config.js",
     "client.js",
     "cordis.patch.yml",

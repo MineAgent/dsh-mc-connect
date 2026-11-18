@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Minecraft direct bridge (MC modes)",
-    "description": "Registers the MC and MC+ agent presets with native mc_* control tools over the local Minecraft client's HTTP API, plus MC event subscriptions and a delivery switch. No MCP server or child process."
+    "description": "Registers the MC and MC+ agent presets with native mc_* control tools over the local Minecraft client's HTTP API, plus MC event subscriptions (common delivery or advanced Lua handling) and a delivery switch. No MCP server or MCP child process."
   }
 }

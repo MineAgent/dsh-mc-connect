@@ -17,6 +17,7 @@ export const DEFAULTS = Object.freeze({
   eventPort: 3422,
   batchWindowMs: 500,
   maxBodyBytes: 1024 * 1024,
+  luaCommand: 'lua',
 });
 
 /** 合并窗口上限（毫秒）。 */
@@ -89,11 +90,19 @@ export function integerInRange(value, fallback, min, max, field) {
 /**
  * 归一化一行 config。
  * @param {Record<string, unknown> | undefined} config - preset 行里的 config。
- * @returns {{ baseUrl: string, eventHost: string, eventPort: number, batchWindowMs: number, maxBodyBytes: number, catalogUrl: string }} 配置。
+ * @returns {{ baseUrl: string, eventHost: string, eventPort: number, batchWindowMs: number, maxBodyBytes: number, luaCommand: string, catalogUrl: string }} 配置。
  */
 export function resolveConfig(config) {
   const baseUrl = normalizeBaseUrl(config?.baseUrl);
   const rawHost = typeof config?.eventHost === 'string' ? config.eventHost.trim() : '';
+  if (
+    config?.luaCommand !== undefined &&
+    config?.luaCommand !== null &&
+    typeof config.luaCommand !== 'string'
+  ) {
+    throw new Error('dsh-mc-connect: luaCommand 必须是字符串');
+  }
+  const rawLuaCommand = typeof config?.luaCommand === 'string' ? config.luaCommand.trim() : '';
   return {
     baseUrl,
     eventHost: rawHost.length > 0 ? rawHost : DEFAULTS.eventHost,
@@ -112,6 +121,7 @@ export function resolveConfig(config) {
       MAX_BODY_BYTES,
       'maxBodyBytes',
     ),
+    luaCommand: rawLuaCommand.length > 0 ? rawLuaCommand : DEFAULTS.luaCommand,
     catalogUrl: resolveHttpUrl(config?.catalogUrl, `${baseUrl}/evt/`, 'catalogUrl'),
   };
 }

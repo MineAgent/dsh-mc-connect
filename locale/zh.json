@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Minecraft 直连（MC 模式）",
-    "description": "注册「MC 模式」与「MC 模式+」，用原生 mc_* 工具直连本机 Minecraft 客户端的 HTTP 接口，并提供 MC 事件订阅与投递开关；不经过 MCP server，也没有子进程。"
+    "description": "注册「MC 模式」与「MC 模式+」，用原生 mc_* 工具直连本机 Minecraft 客户端的 HTTP 接口，并提供 MC 事件订阅（普通投递或 Lua 高级处理）与投递开关；不经过 MCP server，也没有 MCP 子进程。"
   }
 }
