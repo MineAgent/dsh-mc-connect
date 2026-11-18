@@ -1,0 +1,237 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 MineAgent
+#
+# dsh-mc-connect 的 bundle 层：注册「MC 模式」与「MC 模式+」两个 agent preset，
+# 并挂一个宿主全局的界面入口。
+#
+# 与已经归档的 MCPServer + MCPServerDSHPlug 方案不同，这里没有 MCP：
+# 14 个 mc_* 工具由 preset 子插件 dsh-mc-connect/tools 直接注册，用 fetch 调
+# 127.0.0.1:3420 上的 /ctl /aif /op /bt /ka；事件订阅（subscribe_mc_event /
+# get_mc_event_types）也在同一个 preset 插件里，监听 127.0.0.1:3422。
+# 不再有 mcp-client，也没有子进程。
+#
+# 界面（设置页开关、输入框下方订阅控件）必须由主 Loader 的裸包名条目承载：
+# client-modules 只扫描主 Loader 条目，preset 子插件在独立 EntryTree 里。
+# 所以 mc-connect-ui 挂在宿主全局，根包只注册 /api/dsh-mc-connect/* 路由与
+# 客户端 bundle，不注册模型工具。
+#
+# MC 模式 = mc_* + 事件工具 + 流程工具；MC+ = 标准模式全部工具 + mc-* + 事件工具。
+# working_directory 会从宿主全局继承进每个 preset，MC 模式用
+# dsh-mc-connect/filter 在自己 scope 上把它遮掉；MC+ 不挂 filter。
+#
+# dsh-web-app 升级后，如果 standard.patch.yml 的 plugins 清单有增减，下面
+# preset-mc-plus 的副本要跟着同步——它不会自动跟随。
+- insert:
+    - id: mc-connect-ui
+      name: 'dsh-mc-connect'
+    - id: preset-mc
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: mc
+        name: MC 模式
+        description: 把 Minecraft 客户端交给 Agent：只用 mc_* 工具观察和操作游戏，不读写文件、不跑 shell、不联网；玩法由你在对话里说明。
+        order: 5
+        plugins:
+          # 收口：把宿主层新增的 working_directory 从 MC 模式的继承工具面里移除。
+          - id: mc-tool-filter
+            name: 'dsh-mc-connect/filter'
+          - id: mc-tools
+            name: 'dsh-mc-connect/tools'
+            config:
+              baseUrl: http://127.0.0.1:3420
+              eventHost: 127.0.0.1
+              eventPort: 3422
+              batchWindowMs: 500
+              maxBodyBytes: 1048576
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              complete: true
+              includeRuntimeContext: false
+              prefix: |-
+                你正在操控本机的 Minecraft（Java 版）客户端，用 mc_ 开头的工具观察世界、采取行动。
+
+                节奏
+                1. 一次做一个动作，做完立刻用 mc_player 和 mc_inventory 对账。
+                2. 想知道刚才发生了什么，就读 mc_chat 和 mc_sounds：指令输出、Baritone 反馈、报错与关键声音都在那里。
+                3. 定时输入配合 waitMs 使用，等它做完再读状态。
+                4. 界面操作优先用 mc_op：结果精确，并且直接返回。需要点鼠标时，先 mc_screenshot 看清界面，再用 mc_cursor 取坐标，最后用 mc_control 的 `mouse goto <x> <y>` 定位。
+                5. 寻路与自动采集用 mc_baritone；Kill Aura 的开关与配置用 mc_killaura。遇到没有专用工具的新 endpoint，先 mc_help 看说明，再用 mc_request 兜底。
+                6. 服务异常时先跑 mc_status 自检。
+
+                事件
+                - 需要游戏里正在发生的事（受伤、死亡、捡到物品、聊天、Baritone 结束、维度切换等）时，先 get_mc_event_types 看字段，再用 subscribe_mc_event 订阅；事件会作为新消息到达，不要轮询。
+                - 不再需要监控时用 subscribe_mc_event({action:"stop"}) 停止。
+
+                任务
+                - 多步任务用 todo_write 记录进度。
+                - 跨轮次的长期目标用 create_goal 建立，get_goal 查看，update_goal 更新或结束。
+                - 需要用户做选择时用 ask_user_question。
+                - 动手实现方案前，用 exit_plan_mode 提交计划并等待确认。
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  # persona 的 complete 模式让整段提示词只有 prefix，这段 section 不会
+                  # 出现在请求里；plan-mode 要求 section 非空，所以留一句行为约定。
+                  section: |-
+                    计划模式：先把方案想清楚，再用 exit_plan_mode 提交完整计划并等待确认。
+                    计划写清目标、成功标准、要做哪些改动、怎么验证，以及有哪些假设。
+                    确认之后再动手。
+    # ── MC 模式+ ─────────────────────────────────────────────────────────────
+    # 工具面 = 标准模式的全部插件 + MC 模式的 mc_* / 事件工具。
+    # 下面 plugins 里的 persona 与 27 行标准清单逐字复制自已安装的
+    # @deepseek-ai/dsh-web-app/presets/standard.patch.yml，只多一行 mc-tools。
+    #
+    # 系统提示词与标准模式逐字相同：persona 只给 prefix，不设 complete，
+    # 因此宿主基线提示词、工作目录、运行时上下文、工具引导照常追加。
+    # 不设 suffix：当前 DSH 只注册 provider / model 两个提示词变量，没有 {{cwd}}。
+    - id: preset-mc-plus
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: mc-plus
+        name: MC 模式+
+        description: 标准模式 + MC 模式：读写文件、跑命令、联网、派子 Agent，同时用 mc_* 工具观察和操控 Minecraft，并订阅游戏事件。
+        order: 8
+        plugins:
+          - id: mc-tools
+            name: 'dsh-mc-connect/tools'
+            config:
+              baseUrl: http://127.0.0.1:3420
+              eventHost: 127.0.0.1
+              eventPort: 3422
+              batchWindowMs: 500
+              maxBodyBytes: 1048576
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a coding agent powered by the {{model}} model.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              # Set false to drop the apply_patch tool beside edit.
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelection: true
+                  modelDiscovery: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: !!js "!ctx.get('profileContext')"
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
+            disabled: true

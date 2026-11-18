@@ -1,0 +1,67 @@
+{
+  "name": "dsh-mc-connect",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 单包 Minecraft 直连：注册「MC 模式」与「MC 模式+」，原生提供 mc_* 控制/观测工具与 MC 事件订阅，不经过 MCP server。",
+  "exports": {
+    ".": "./index.js",
+    "./tools": "./tools.js",
+    "./filter": "./filter.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "tools.js",
+    "filter.js",
+    "bridge.js",
+    "events.js",
+    "config.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "LICENSE",
+    "LICENSE.CC-BY-NC-SA-4.0",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "minecraft",
+    "minecraft-mode"
+  ],
+  "license": "GPL-3.0-only",
+  "author": "MineAgent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MineAgent/dsh-mc-connect.git"
+  },
+  "homepage": "https://github.com/MineAgent/dsh-mc-connect#readme",
+  "bugs": {
+    "url": "https://github.com/MineAgent/dsh-mc-connect/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
