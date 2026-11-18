@@ -1,7 +1,7 @@
 /**
  * dsh-mc-connect preset 入口的接线测试。
  *
- * 用假 Context 验证 tools.js 同时注册 14 个 mc_* 与 2 个事件工具，
+ * 用假 Context 验证 tools.js 同时注册 13 个 mc_* 与 2 个事件工具，
  * 且非法配置在 apply 时直接抛错。
  *
  *   node --test test/tools.test.js
@@ -54,10 +54,10 @@ function fakeContext(options = {}) {
   return { ctx, tools, listeners };
 }
 
-test('一个 preset 行同时注册 14 个 mc_* 与 2 个事件工具', () => {
+test('一个 preset 行同时注册 13 个 mc_* 与 2 个事件工具', () => {
   const { ctx, tools } = fakeContext();
   apply(ctx, {});
-  assert.equal(tools.size, 16);
+  assert.equal(tools.size, 15);
   for (const name of [
     'mc_status',
     'mc_player',
@@ -71,10 +71,10 @@ test('一个 preset 行同时注册 14 个 mc_* 与 2 个事件工具', () => {
   }
 });
 
-test('事件服务缺失时仍注册 14 个 mc_*', () => {
+test('事件服务缺失时仍注册 13 个 mc_*', () => {
   const { ctx, tools } = fakeContext({ events: false });
   apply(ctx, {});
-  assert.equal(tools.size, 14);
+  assert.equal(tools.size, 13);
   assert.equal(tools.has('subscribe_mc_event'), false);
   assert.equal(tools.has('mc_status'), true);
 });

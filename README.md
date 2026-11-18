@@ -12,7 +12,7 @@
 |---|---|
 | 独立 MCP stdio 程序 `minecraft-mcp-bridge` | 不再需要；`bridge.js` 直接 `fetch` `127.0.0.1:3420` |
 | `@deepseek-ai/dsh-mcp-client` 拉起子进程 | 工具用 `ctx.tools.register` 直接注册在 preset scope |
-| 14 个 `mcp__minecraft__*` 工具 | 14 个 `mc_*` 工具 |
+| 14 个 `mcp__minecraft__*` 工具 | 13 个 `mc_*` 工具 |
 | `@local/dsh-mc-event` + `@local/dsh-mc-event-ui` 两个包 | 同一个包里的 `events.js` + `client.js` |
 | 事件端口 3422、控制端口 3420 | 不变 |
 
@@ -27,7 +27,7 @@ dsh-mc-connect/
 ├── cordis.patch.yml      # 宿主全局 UI 行 + preset-mc + preset-mc-plus
 ├── index.js              # 宿主全局入口：只注册 UI 状态路由
 ├── tools.js              # preset 入口：mc_* + 事件工具
-├── bridge.js             # 3420 HTTP 客户端与 14 个工具定义
+├── bridge.js             # 3420 HTTP 客户端与 13 个工具定义
 ├── events.js             # 3422 监听、订阅、投递、投递开关、状态路由
 ├── lua.js                # advanced 订阅的常驻 Lua 进程、协议与临时脚本
 ├── config.js             # 行配置归一化与校验
@@ -43,7 +43,7 @@ dsh-mc-connect/
 
 preset id 是 `mc`，显示名「MC 模式」，`order: 5`。
 
-- **工具面**：14 个 `mc_*` + `subscribe_mc_event` / `get_mc_event_types` +
+- **工具面**：13 个 `mc_*` + `subscribe_mc_event` / `get_mc_event_types` +
   `todo_write` / `create_goal` / `get_goal` / `update_goal` / `ask_user_question` /
   `exit_plan_mode`。
 - 宿主全局层继承来的 `working_directory` 由 `dsh-mc-connect/filter` 在 MC 模式
@@ -56,14 +56,16 @@ preset id 是 `mc`，显示名「MC 模式」，`order: 5`。
 preset id 是 `mc-plus`，显示名「MC 模式+」，`order: 8`。
 
 - **工具面** = 标准模式的全部插件 + `mc_*` + 事件工具。
-- **系统提示词** = 标准模式逐字相同：`persona` 只写
-  `You are a coding agent powered by the {{model}} model.`，不设 `complete`、
-  不设 `suffix`，宿主基线提示词、工作目录、运行时上下文照常追加。
-- `cordis.patch.yml` 里 MC+ 的插件清单是**已安装**
-  `@deepseek-ai/dsh-web-app/presets/standard.patch.yml` 的逐字副本，只多一行
-  `mc-tools`。`dsh-web-app` 升级后如果标准清单增减，这份副本要手工同步。
+- **系统提示词** = 标准模式的英文 persona 加 MC 模式那段特有约定：`persona`
+  prefix 以 `You are a coding agent powered by the {{model}} model.` 开头，
+  再接 MC 的控制节奏、事件与任务约定；不设 `complete`、不设 `suffix`，
+  宿主基线提示词、工作目录、运行时上下文照常追加。
+- `cordis.patch.yml` 里 MC+ 的插件清单复制自**已安装**
+  `@deepseek-ai/dsh-web-app/presets/standard.patch.yml`，只多一行 `mc-tools`；
+  `persona` prefix 在此基础上追加 MC 约定。`dsh-web-app` 升级后如果标准清单
+  增减，这份副本要手工同步。
 
-## 工具（14 个）
+## 工具（13 个）
 
 | 工具 | 游戏侧接口 | 说明 |
 |---|---|---|
@@ -73,7 +75,6 @@ preset id 是 `mc-plus`，显示名「MC 模式+」，`order: 8`。
 | `mc_inventory` | `GET /aif/inventory` | 背包 / 副手 / 盔甲 / 快捷栏 / 打开的容器 |
 | `mc_world` | `GET /aif/world` | 维度 / 时间 / 天数 / 天气 |
 | `mc_chat` | `GET /aif/msg` | 增量聊天回显，**读取即清空** |
-| `mc_sounds` | `GET /aif/keysnd`（默认）或 `/aif/sound` | 增量声音，**读取即清空** |
 | `mc_screenshot` | `GET /ctl/prtsc` | 当前帧 PNG；模型支持图片时作为图片返回 |
 | `mc_cursor` | `GET /ctl/mouse` | 光标像素坐标 / GUI 坐标 / 界面类名 |
 | `mc_control` | `POST /ctl/` | 按键 / 鼠标 / 视角 / `chat` / `type`，支持 `waitMs` |
@@ -326,7 +327,7 @@ curl -s http://127.0.0.1:3080/api/dsh-mc-connect/listener
 `node --test test/` 使用假 Context 与真实 localhost HTTP，不依赖 DSH 或真实游戏，
 覆盖：
 
-- 14 个 `mc_*` 的注册、参数校验、请求体、错误路径、截图图片准入与降级；
+- 13 个 `mc_*` 的注册、参数校验、请求体、错误路径、截图图片准入与降级；
 - 事件订阅、过滤、合并、`steer`/`followup`、冷启动、停止、过期、`max_events`、
   端口冲突、两个 preset 实例共享监听器；
 - advanced Lua：启动握手、事件不自动投递、`send`/`forward`、`mc.request`、

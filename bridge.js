@@ -7,7 +7,7 @@
  * `http://127.0.0.1:3420` 的共享 HTTP 接口映射成 DSH 原生工具。
  *
  *   /ctl  mcctl               控制：按键 / 鼠标 / 视角 / 截图 / 聊天 / 打字
- *   /aif  AdvancedInfoFetcher 只读状态：坐标 / 目标方块 / 背包 / 聊天 / 声音 / 世界
+ *   /aif  AdvancedInfoFetcher 只读状态：坐标 / 目标方块 / 背包 / 聊天 / 世界
  *   /op   Craft Command       容器操作：合成 / 熔炉 / 箱子 / 快捷栏 / 转向
  *   /bt   MGBaritoneConnector Baritone 命令
  *   /ka   Kill Aura          Kill Aura 开关与配置
@@ -389,7 +389,7 @@ function imageDefinition(spec) {
 }
 
 /**
- * 注册 14 个 Minecraft 控制/观测工具。
+ * 注册 13 个 Minecraft 控制/观测工具。
  *
  * @param {object} ctx - preset scope 上下文（提供 tools，可选 attachments/llm）。
  * @param {{ baseUrl: string }} config - 已归一化配置。
@@ -508,34 +508,6 @@ export function registerBridgeTools(ctx, config) {
         '自上次读取以来聊天栏出现的一切：指令输出、Baritone 输出、报错、玩家发言。读取即清空，只返回新内容。',
       timeoutMs: TOOL_TIMEOUT.read,
       run: snapshot('/aif/msg', '（没有新的聊天内容）'),
-    }),
-
-    textDefinition({
-      name: 'mc_sounds',
-      description: '自上次读取以来播放的声音，用来判断刚才发生了什么。读取即清空，只返回新内容。',
-      timeoutMs: TOOL_TIMEOUT.read,
-      parameters: {
-        type: 'object',
-        properties: {
-          filter: {
-            type: 'string',
-            enum: ['important', 'all'],
-            description:
-              'important（默认）只保留方块破坏/放置、怪物、爆炸、拾取等关键声音；all 返回全部声音事件',
-          },
-        },
-        additionalProperties: false,
-      },
-      async run(args, exec) {
-        const filter = enumValue(args.filter, ['important', 'all'], 'filter', 'important');
-        const text = (
-          await request(filter === 'all' ? '/aif/sound' : '/aif/keysnd', {
-            timeoutMs: TIMEOUT.read,
-            signal: exec.signal,
-          })
-        ).trim();
-        return text.length > 0 ? text : '（没有新的声音）';
-      },
     }),
 
     imageDefinition({

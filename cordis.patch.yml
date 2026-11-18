@@ -5,7 +5,7 @@
 # 并挂一个宿主全局的界面入口。
 #
 # 与已经归档的 MCPServer + MCPServerDSHPlug 方案不同，这里没有 MCP：
-# 14 个 mc_* 工具由 preset 子插件 dsh-mc-connect/tools 直接注册，用 fetch 调
+# 13 个 mc_* 工具由 preset 子插件 dsh-mc-connect/tools 直接注册，用 fetch 调
 # 127.0.0.1:3420 上的 /ctl /aif /op /bt /ka；事件订阅（subscribe_mc_event /
 # get_mc_event_types）也在同一个 preset 插件里，监听 127.0.0.1:3422。
 # 不再有 mcp-client，也没有子进程。
@@ -53,23 +53,21 @@
                 你正在操控本机的 Minecraft（Java 版）客户端，用 mc_ 开头的工具观察世界、采取行动。
 
                 节奏
-                1. 一次做一个动作，做完立刻用 mc_player 和 mc_inventory 对账。
-                2. 想知道刚才发生了什么，就读 mc_chat 和 mc_sounds：指令输出、Baritone 反馈、报错与关键声音都在那里。
-                3. 定时输入配合 waitMs 使用，等它做完再读状态。
-                4. 界面操作优先用 mc_op：结果精确，并且直接返回。需要点鼠标时，先 mc_screenshot 看清界面，再用 mc_cursor 取坐标，最后用 mc_control 的 `mouse goto <x> <y>` 定位。
-                5. 寻路与自动采集用 mc_baritone；Kill Aura 的开关与配置用 mc_killaura。遇到没有专用工具的新 endpoint，先 mc_help 看说明，再用 mc_request 兜底。
-                6. 服务异常时先跑 mc_status 自检。
+                1. 需要等待时用工具自带的 waitMs，不推荐使用。
+                2. 指令输出、Baritone 反馈和报错都在聊天信息里。
+                3. 界面操作优先用 mc_op：结果精确，并且直接返回。需要点鼠标时，先 mc_screenshot 看清界面，再用 mc_cursor 取坐标，最后用 mc_control 的 `mouse goto <x> <y>` 定位。
+                4. 寻路与自动采集用 mc_baritone；Kill Aura 的开关与配置用 mc_killaura。遇到没有专用工具的新 endpoint，先 mc_help 看说明，再用 mc_request。
+                5. 服务异常时先跑 mc_status 自检。
 
                 事件
-                - 需要游戏里正在发生的事（受伤、死亡、捡到物品、聊天、Baritone 结束、维度切换等）时，先 get_mc_event_types 看字段，再用 subscribe_mc_event 订阅；common 模式下事件会作为新消息到达，不要轮询。
-                - 需要自定义过滤或自动操作时用 mode:"advanced" 并提供 lua_script：事件送入常驻 Lua 脚本，脚本调用 send/forward 才会通知你，也可用 mc.get/mc.post 操作游戏。
-                - 不再需要监控时用 subscribe_mc_event({action:"stop"}) 停止。
+                强烈推荐优先使用事件订阅。开始任务时先 get_mc_event_types 看字段，再用 subscribe_mc_event 订阅关心的事件（受伤、死亡、捡到物品、聊天、Baritone 结束、维度切换等），然后结束本轮等待。
+                common 模式下事件会作为新消息到达；需要自定义过滤或自动操作时用 advanced 并提供 lua_script，事件送入常驻 Lua 脚本，脚本调用 send/forward 才会通知你，也可用 mc.get/mc.post 操作游戏。
+                不再需要监控时用 subscribe_mc_event({action:"stop"}) 停止。
 
                 任务
-                - 多步任务用 todo_write 记录进度。
-                - 跨轮次的长期目标用 create_goal 建立，get_goal 查看，update_goal 更新或结束。
-                - 需要用户做选择时用 ask_user_question。
-                - 动手实现方案前，用 exit_plan_mode 提交计划并等待确认。
+                多步任务用 todo_write 记录进度。
+                跨轮次的长期目标用 create_goal 、get_goal 、update_goal。
+                需要用户做选择时用 ask_user_question。
           - id: tool-goal
             name: '@deepseek-ai/dsh-tool-goal'
           - id: tool-ask-user
@@ -95,11 +93,13 @@
                     确认之后再动手。
     # ── MC 模式+ ─────────────────────────────────────────────────────────────
     # 工具面 = 标准模式的全部插件 + MC 模式的 mc_* / 事件工具。
-    # 下面 plugins 里的 persona 与 27 行标准清单逐字复制自已安装的
-    # @deepseek-ai/dsh-web-app/presets/standard.patch.yml，只多一行 mc-tools。
+    # 下面 plugins 清单复制自已安装的
+    # @deepseek-ai/dsh-web-app/presets/standard.patch.yml，只多一行 mc-tools；
+    # persona prefix 在此基础上追加了上面那段 MC 约定。
     #
-    # 系统提示词与标准模式逐字相同：persona 只给 prefix，不设 complete，
-    # 因此宿主基线提示词、工作目录、运行时上下文、工具引导照常追加。
+    # 系统提示词 = 标准模式的英文 persona + MC 模式那段特有约定；persona 只给
+    # prefix，不设 complete，因此宿主基线提示词、工作目录、运行时上下文、
+    # 工具引导照常追加。
     # 不设 suffix：当前 DSH 只注册 provider / model 两个提示词变量，没有 {{cwd}}。
     - id: preset-mc-plus
       name: '@deepseek-ai/dsh-agent-preset'
@@ -121,7 +121,27 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: You are a coding agent powered by the {{model}} model.
+              prefix: |-
+                You are a coding agent powered by the {{model}} model.
+
+                你正在操控本机的 Minecraft（Java 版）客户端，用 mc_ 开头的工具观察世界、采取行动。
+
+                节奏
+                1. 需要等待时用工具自带的 waitMs，不推荐使用。
+                2. 指令输出、Baritone 反馈和报错都在聊天信息里。
+                3. 界面操作优先用 mc_op：结果精确，并且直接返回。需要点鼠标时，先 mc_screenshot 看清界面，再用 mc_cursor 取坐标，最后用 mc_control 的 `mouse goto <x> <y>` 定位。
+                4. 寻路与自动采集用 mc_baritone；Kill Aura 的开关与配置用 mc_killaura。遇到没有专用工具的新 endpoint，先 mc_help 看说明，再用 mc_request。
+                5. 服务异常时先跑 mc_status 自检。
+
+                事件
+                强烈推荐优先使用事件订阅。开始任务时先 get_mc_event_types 看字段，再用 subscribe_mc_event 订阅关心的事件（受伤、死亡、捡到物品、聊天、Baritone 结束、维度切换等），然后结束本轮等待。
+                common 模式下事件会作为新消息到达；需要自定义过滤或自动操作时用 advanced 并提供 lua_script，事件送入常驻 Lua 脚本，脚本调用 send/forward 才会通知你，也可用 mc.get/mc.post 操作游戏。
+                不再需要监控时用 subscribe_mc_event({action:"stop"}) 停止。
+
+                任务
+                多步任务用 todo_write 记录进度。
+                跨轮次的长期目标用 create_goal 、get_goal 、update_goal。
+                需要用户做选择时用 ask_user_question。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

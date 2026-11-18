@@ -1,7 +1,7 @@
 /**
  * dsh-mc-connect 直连桥的离线测试。
  *
- * 用真实 localhost HTTP 假服务替代 Minecraft 的 3420 接口，验证 14 个
+ * 用真实 localhost HTTP 假服务替代 Minecraft 的 3420 接口，验证 13 个
  * mc_* 工具的参数、请求、错误路径与截图图片准入。
  *
  *   node --test test/bridge.test.js
@@ -44,8 +44,6 @@ before(async () => {
       if (request.url === '/aif/inventory') return send(200, '石头 ×64');
       if (request.url === '/aif/world') return send(200, '主世界 白天');
       if (request.url === '/aif/msg') return send(200, '聊天一行');
-      if (request.url === '/aif/keysnd') return send(200, '关键声音');
-      if (request.url === '/aif/sound') return send(200, '全部声音');
       if (request.url === '/ctl/mouse') return send(200, '光标 10 20');
       if (request.url === '/ctl/prtsc') {
         response.writeHead(200, { 'content-type': 'image/png', 'content-length': PNG.length });
@@ -149,7 +147,7 @@ async function loadTools(options = {}) {
   return { tools, saved, ctx };
 }
 
-test('注册 14 个 mc_* 工具，参数都是对象 schema', async () => {
+test('注册 13 个 mc_* 工具，参数都是对象 schema', async () => {
   const { tools } = await loadTools();
   assert.deepEqual([...tools.keys()].sort(), [
     'mc_baritone',
@@ -163,7 +161,6 @@ test('注册 14 个 mc_* 工具，参数都是对象 schema', async () => {
     'mc_player',
     'mc_request',
     'mc_screenshot',
-    'mc_sounds',
     'mc_status',
     'mc_world',
   ]);
@@ -189,13 +186,6 @@ test('只读快照工具返回服务文本', async () => {
     assert.equal(value.text, expected);
     assert.deepEqual(tools.get(name).output.render({}, value), [{ type: 'text', text: expected }]);
   }
-});
-
-test('mc_sounds 默认关键声音，filter=all 走全部声音', async () => {
-  const { tools } = await loadTools();
-  const exec = fakeExec();
-  assert.equal((await tools.get('mc_sounds').execute({}, exec)).text, '关键声音');
-  assert.equal((await tools.get('mc_sounds').execute({ filter: 'all' }, exec)).text, '全部声音');
 });
 
 test('mc_status 汇总接口挂载情况', async () => {
