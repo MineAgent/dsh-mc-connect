@@ -1,7 +1,7 @@
 /**
  * dsh-mc-connect 直连桥的离线测试。
  *
- * 用真实 localhost HTTP 假服务替代 Minecraft 的 3420 接口，验证 13 个
+ * 用真实 localhost HTTP 假服务替代 Minecraft 的 3420 接口，验证 19 个
  * mc_* 工具的参数、请求、错误路径与截图图片准入。
  *
  *   node --test test/bridge.test.js
@@ -53,7 +53,17 @@ before(async () => {
       if (request.url === '/ctl/' && request.method === 'POST') {
         return send(200, JSON.stringify({ actions: ['W'], queued: 0, inWorld: true }));
       }
-      if (request.url === '/op/' && request.method === 'POST') return send(200, '合成了 1 个');
+      if (request.url === '/op/' && request.method === 'POST') {
+        if (body === 'eat 1') return send(200, '已食用 1 个');
+        if (body === 'eat 3') return send(200, '已食用 3 个');
+        if (body === 'mine') return send(200, '已破坏 石头');
+        if (body.startsWith('craft ')) return send(200, '合成了 1 个');
+        if (body.startsWith('inventory ')) return send(200, '已换到快捷栏');
+        if (body.startsWith('furnace ')) return send(200, '熔炉操作完成');
+        if (body.startsWith('chest ')) return send(200, '箱子操作完成');
+        if (body.startsWith('look ')) return send(200, '已转向');
+        return send(200, '合成了 1 个');
+      }
       if (request.url === '/bt/' && request.method === 'POST') return send(200, '已接受');
       if (request.url === '/ka/state') return send(200, '{"enabled":false}');
       if (request.url === '/ka/config' && request.method === 'POST') {
@@ -147,17 +157,23 @@ async function loadTools(options = {}) {
   return { tools, saved, ctx };
 }
 
-test('注册 13 个 mc_* 工具，参数都是对象 schema', async () => {
+test('注册 19 个 mc_* 工具，参数都是对象 schema', async () => {
   const { tools } = await loadTools();
   assert.deepEqual([...tools.keys()].sort(), [
     'mc_baritone',
     'mc_chat',
+    'mc_chest',
     'mc_control',
+    'mc_craft',
     'mc_cursor',
+    'mc_eat',
+    'mc_furnace',
     'mc_help',
+    'mc_hotbar',
     'mc_inventory',
     'mc_killaura',
-    'mc_op',
+    'mc_look',
+    'mc_mine',
     'mc_player',
     'mc_request',
     'mc_screenshot',
@@ -223,18 +239,112 @@ test('mc_control 拒绝空命令，waitMs 被夹取', async () => {
   assert.doesNotMatch(value.text, /已等待/);
 });
 
-test('mc_op / mc_baritone 发 POST', async () => {
+test('mc_baritone 发 POST', async () => {
   const { tools } = await loadTools();
-  assert.equal(
-    (await tools.get('mc_op').execute({ command: 'craft stone 1' }, fakeExec())).text,
-    '合成了 1 个',
-  );
-  assert.equal(lastRequest.url, '/op/');
   assert.equal(
     (await tools.get('mc_baritone').execute({ command: 'goal 0 64 0' }, fakeExec())).text,
     '已接受',
   );
   assert.equal(lastRequest.url, '/bt/');
+});
+
+test('mc_craft / mc_hotbar 发 POST 并校验参数', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  assert.equal((await tools.get('mc_craft').execute({ item: 'stone' }, exec)).text, '合成了 1 个');
+  assert.equal(lastRequest.url, '/op/');
+  assert.equal(lastRequest.body, 'craft stone 1');
+  assert.equal(
+    (await tools.get('mc_craft').execute({ item: 'minecraft:torch', amount: 16 }, exec)).text,
+    '合成了 1 个',
+  );
+  assert.equal(lastRequest.body, 'craft minecraft:torch 16');
+  await assert.rejects(() => tools.get('mc_craft').execute({}, exec), /item 不能为空/);
+  await assert.rejects(
+    () => tools.get('mc_craft').execute({ item: 'stone', amount: 0 }, exec),
+    /amount 必须是 1–2304 的整数/,
+  );
+  assert.equal((await tools.get('mc_hotbar').execute({ item: 'torch' }, exec)).text, '已换到快捷栏');
+  assert.equal(lastRequest.body, 'inventory torch 1');
+  assert.equal((await tools.get('mc_hotbar').execute({ item: 'torch', slot: 9 }, exec)).text, '已换到快捷栏');
+  assert.equal(lastRequest.body, 'inventory torch 9');
+  await assert.rejects(
+    () => tools.get('mc_hotbar').execute({ item: 'torch', slot: 10 }, exec),
+    /slot 必须是 1–9 的整数/,
+  );
+});
+
+test('mc_furnace / mc_chest 发 POST 并校验参数', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  assert.equal(
+    (await tools.get('mc_furnace').execute({ action: 'put', slot: 'raw', item: 'raw_iron', amount: 8 }, exec))
+      .text,
+    '熔炉操作完成',
+  );
+  assert.equal(lastRequest.body, 'furnace put raw raw_iron 8');
+  assert.equal(
+    (await tools.get('mc_furnace').execute({ action: 'get', slot: 'product' }, exec)).text,
+    '熔炉操作完成',
+  );
+  assert.equal(lastRequest.body, 'furnace get product 1');
+  await assert.rejects(
+    () => tools.get('mc_furnace').execute({ action: 'put', slot: 'product', item: 'coal' }, exec),
+    /slot 只能是 raw\/fuel/,
+  );
+  await assert.rejects(
+    () => tools.get('mc_furnace').execute({ action: 'get', slot: 'raw', item: 'coal' }, exec),
+    /不接受 item/,
+  );
+  await assert.rejects(
+    () => tools.get('mc_furnace').execute({ action: 'put', slot: 'raw' }, exec),
+    /item 不能为空/,
+  );
+  assert.equal(
+    (await tools.get('mc_chest').execute({ action: 'put', item: 'cobblestone', amount: 64 }, exec)).text,
+    '箱子操作完成',
+  );
+  assert.equal(lastRequest.body, 'chest put cobblestone 64');
+  assert.equal(
+    (await tools.get('mc_chest').execute({ action: 'get', item: 'iron_ingot' }, exec)).text,
+    '箱子操作完成',
+  );
+  assert.equal(lastRequest.body, 'chest get iron_ingot 1');
+});
+
+test('mc_look 发 POST 并校验轴', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  assert.equal((await tools.get('mc_look').execute({ axis: 'yaw', angle: '~-20' }, exec)).text, '已转向');
+  assert.equal(lastRequest.url, '/op/');
+  assert.equal(lastRequest.body, 'look yaw ~-20');
+  assert.equal((await tools.get('mc_look').execute({ axis: 'pitch', angle: '90' }, exec)).text, '已转向');
+  assert.equal(lastRequest.body, 'look pitch 90');
+  await assert.rejects(
+    () => tools.get('mc_look').execute({ axis: 'roll', angle: '0' }, exec),
+    /axis 必须是 yaw\/pitch 之一/,
+  );
+});
+
+test('mc_eat / mc_mine 发 POST，校验 eat 数量', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  assert.equal((await tools.get('mc_eat').execute({}, exec)).text, '已食用 1 个');
+  assert.equal(lastRequest.method, 'POST');
+  assert.equal(lastRequest.url, '/op/');
+  assert.equal(lastRequest.body, 'eat 1');
+  assert.equal((await tools.get('mc_eat').execute({ amount: 3 }, exec)).text, '已食用 3 个');
+  assert.equal(lastRequest.body, 'eat 3');
+  assert.equal((await tools.get('mc_mine').execute({}, exec)).text, '已破坏 石头');
+  assert.equal(lastRequest.method, 'POST');
+  assert.equal(lastRequest.url, '/op/');
+  assert.equal(lastRequest.body, 'mine');
+  for (const amount of [0, 1.5, 2305]) {
+    await assert.rejects(
+      () => tools.get('mc_eat').execute({ amount }, exec),
+      /amount 必须是 1–2304 的整数/,
+    );
+  }
 });
 
 test('mc_killaura 读状态与更新配置', async () => {

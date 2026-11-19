@@ -4,10 +4,10 @@
  * dsh-mc-connect — preset 入口。
  *
  * 一个插件行同时提供：
- *  - 13 个 Minecraft 控制/观测工具（mc_*），直接 HTTP 调 127.0.0.1:3420；
+ *  - 19 个 Minecraft 控制/观测工具（mc_*），直接 HTTP 调 127.0.0.1:3420；
  *  - 2 个事件工具（subscribe_mc_event / get_mc_event_types），监听 127.0.0.1:3422。
  *
- * 13 个 mc_* 只依赖 `tools`，所以先注册；事件工具还需要会话控制器与会话存储，
+ * 19 个 mc_* 只依赖 `tools`，所以先注册；事件工具还需要会话控制器与会话存储，
  * 用 `ctx.inject` 等它们齐了再注册到同一个 preset scope。这样某些组合缺事件
  * 服务时，游戏控制工具仍然可用。
  *

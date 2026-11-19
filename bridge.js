@@ -249,6 +249,20 @@ function requireCommand(value, field) {
 }
 
 /**
+ * 要求一个非空、不含空白的字符串；用于命令里的单个 token。
+ * @param {unknown} value - 参数值。
+ * @param {string} field - 参数名。
+ * @returns {string} 去空白后的单个 token。
+ */
+function requireToken(value, field) {
+  const text = requireCommand(value, field);
+  if (/\s/.test(text)) {
+    throw new BridgeError(`${field} 不能包含空白。`);
+  }
+  return text;
+}
+
+/**
  * 校验枚举参数。
  * @param {unknown} value - 参数值。
  * @param {readonly string[]} allowed - 允许值。
@@ -274,6 +288,24 @@ function waitMsValue(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) throw new BridgeError('waitMs 必须是数字。');
   return Math.min(Math.max(Math.trunc(number), 0), 60_000);
+}
+
+/**
+ * 归一化有界整数参数：缺失时用 fallback，否则必须是范围内的整数。
+ * @param {unknown} value - 参数值。
+ * @param {number} min - 最小值。
+ * @param {number} max - 最大值。
+ * @param {string} field - 参数名。
+ * @param {number} fallback - 缺失时的默认值。
+ * @returns {number} 合法整数。
+ */
+function integerValue(value, min, max, field, fallback) {
+  if (value === undefined) return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new BridgeError(`${field} 必须是 ${min}–${max} 的整数。`);
+  }
+  return number;
 }
 
 /**
@@ -389,7 +421,7 @@ function imageDefinition(spec) {
 }
 
 /**
- * 注册 13 个 Minecraft 控制/观测工具。
+ * 注册 19 个 Minecraft 控制/观测工具。
  *
  * @param {object} ctx - preset scope 上下文（提供 tools，可选 attachments/llm）。
  * @param {{ baseUrl: string }} config - 已归一化配置。
@@ -483,14 +515,14 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_player',
       description:
-        '坐标、朝向（yaw/pitch）、生命、饱食、经验、状态效果，以及准星指向的目标方块和它的光照，纯文本。放置/挖掘/右键前先看目标方块；`未选中` 表示准星不在方块上。',
+        '坐标、朝向（yaw/pitch）、生命、饱食、经验、状态效果，以及准星指向的目标方块和它的光照。放置/挖掘/右键前先看目标方块；`未选中` 表示准星不在方块上。',
       timeoutMs: TOOL_TIMEOUT.read,
       run: snapshot('/aif/info', '(没有读到玩家状态)'),
     }),
 
     textDefinition({
       name: 'mc_inventory',
-      description: '背包、副手、盔甲、快捷栏，以及当前打开的熔炉/箱子里有什么，纯文本。',
+      description: '背包、副手、盔甲、快捷栏，以及当前打开的熔炉/箱子里有什么。',
       timeoutMs: TOOL_TIMEOUT.read,
       run: snapshot('/aif/inventory', '(背包是空的)'),
     }),
@@ -505,14 +537,14 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_chat',
       description:
-        '自上次读取以来聊天栏出现的一切：指令输出、Baritone 输出、报错、玩家发言。读取即清空，只返回新内容。',
+        '自上次读取以来聊天栏出现的一切。读取即清空，只返回新内容。',
       timeoutMs: TOOL_TIMEOUT.read,
       run: snapshot('/aif/msg', '（没有新的聊天内容）'),
     }),
 
     imageDefinition({
       name: 'mc_screenshot',
-      description: '截取当前游戏帧并作为图片返回（原生分辨率 PNG，不写入 screenshots 目录）。',
+      description: '截取当前游戏帧并作为图片返回。',
       timeoutMs: TOOL_TIMEOUT.screenshot,
       async run(_args, exec) {
         const png = await request('/ctl/prtsc', {
@@ -539,7 +571,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_control',
       description:
-        '把一段输入序列交给游戏，走原版输入管线执行（不抢真实键鼠）。多行或用 `;` 分隔，严格按顺序执行。按键/鼠标这类定时动作是排队的，命令一被接受就返回，用 waitMs 等它做完。含 `type`/`typeEnter` 需要当前有聚焦的文本框，否则整个请求失败、什么都不执行。Baritone 命令改用 mc_baritone 工具，不再走这里。',
+        '把一段输入序列交给游戏。多行或用 `;` 分隔，严格按顺序执行。按键/鼠标这类定时动作是排队的，命令一被接受就返回，用 waitMs 等它做完。含 `type`/`typeEnter` 需要当前有聚焦的文本框，否则整个请求失败、什么都不执行。',
       timeoutMs: TOOL_TIMEOUT.control,
       parameters: {
         type: 'object',
@@ -584,27 +616,254 @@ export function registerBridgeTools(ctx, config) {
     }),
 
     textDefinition({
-      name: 'mc_op',
-      description: '执行一条容器操作命令并等它真正做完再返回：成功给结果文本，被拒给原因。合成可能需要数十秒。',
+      name: 'mc_craft',
+      description:
+        '用背包里的材料合成物品，等合成结束再返回。3×3 配方需要先打开工作台界面；成品放不下、原料不足、配方未解锁或合成格不空都会直接报错。',
       timeoutMs: TOOL_TIMEOUT.op,
       parameters: {
         type: 'object',
         properties: {
-          command: {
+          item: {
             type: 'string',
-            description:
-              '一条命令，不能为空：`craft <物品id> [数量]` 用背包里的材料合成（3×3 配方要先打开工作台界面）；`inventory <物品id> [1-9]` 把物品换到快捷栏第 N 格；`furnace put <raw|fuel> <物品id> [数量]` / `furnace get <raw|fuel|product> [数量]`（要先打开熔炉界面）；`chest put <物品id> [数量]` / `chest get <物品id> [数量]`（要先打开箱子界面）；`look <yaw|pitch> <角度>` 转视角，角度支持 `~` 相对值。物品 id 省略命名空间时默认 minecraft。',
+            description: '要合成的物品 ID，命名空间可省略（如 crafting_table 或 minecraft:crafting_table）。',
+          },
+          amount: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 2304,
+            description: '要合成的成品数量，默认 1，按整次合成向上取整。',
           },
         },
-        required: ['command'],
+        required: ['item'],
         additionalProperties: false,
       },
       async run(args, exec) {
-        const command = requireCommand(args.command, 'command');
+        const item = requireToken(args.item, 'item');
+        const amount = integerValue(args.amount, 1, 2304, 'amount', 1);
         return (
           await request('/op/', {
             method: 'POST',
-            body: command,
+            body: `craft ${item} ${amount}`,
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_hotbar',
+      description:
+        '把背包里的物品换到快捷栏第 N 格，一次点击完成。只匹配物品 ID 相同的第一堆；被换出的物品回到原格子。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      parameters: {
+        type: 'object',
+        properties: {
+          item: {
+            type: 'string',
+            description: '要换到快捷栏的物品 ID，命名空间可省略。',
+          },
+          slot: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 9,
+            description: '目标快捷栏格，1–9，默认 1。',
+          },
+        },
+        required: ['item'],
+        additionalProperties: false,
+      },
+      async run(args, exec) {
+        const item = requireToken(args.item, 'item');
+        const slot = integerValue(args.slot, 1, 9, 'slot', 1);
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body: `inventory ${item} ${slot}`,
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_furnace',
+      description:
+        '在打开着的熔炉/高炉/烟熏炉界面里放入或取出物品，等操作完成再返回。必须先右键打开对应界面；put 只能写 raw 或 fuel，get 可读 raw/fuel/product，产物格不能拆分时会整堆取出。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['put', 'get'],
+            description: 'put=放入；get=取出。',
+          },
+          slot: {
+            type: 'string',
+            enum: ['raw', 'fuel', 'product'],
+            description: 'raw=原料格；fuel=燃料格；product=产物格（仅 get）。',
+          },
+          item: {
+            type: 'string',
+            description: 'action=put 时必填；要放入的物品 ID，命名空间可省略。action=get 时不要提供。',
+          },
+          amount: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 6400,
+            description: '数量，默认 1。',
+          },
+        },
+        required: ['action', 'slot'],
+        additionalProperties: false,
+      },
+      async run(args, exec) {
+        const action = enumValue(args.action, ['put', 'get'], 'action');
+        const slot = enumValue(args.slot, ['raw', 'fuel', 'product'], 'slot');
+        const amount = integerValue(args.amount, 1, 6400, 'amount', 1);
+        let body;
+        if (action === 'put') {
+          if (slot === 'product') {
+            throw new BridgeError('action=put 时 slot 只能是 raw/fuel。');
+          }
+          const item = requireToken(args.item, 'item');
+          body = `furnace put ${slot} ${item} ${amount}`;
+        } else {
+          if (args.item !== undefined) {
+            throw new BridgeError('action=get 不接受 item。');
+          }
+          body = `furnace get ${slot} ${amount}`;
+        }
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body,
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_chest',
+      description:
+        '在打开着的箱子/陷阱箱/大箱子/木桶界面里放入或取出物品，等操作完成再返回。必须先右键打开对应界面；只匹配物品 ID 和组件都相同的堆，失败时不会移动任何物品。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['put', 'get'],
+            description: 'put=放入箱子；get=从箱子取出。',
+          },
+          item: {
+            type: 'string',
+            description: '要放入或取出的物品 ID，命名空间可省略。',
+          },
+          amount: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 6400,
+            description: '数量，默认 1。',
+          },
+        },
+        required: ['action', 'item'],
+        additionalProperties: false,
+      },
+      async run(args, exec) {
+        const action = enumValue(args.action, ['put', 'get'], 'action');
+        const item = requireToken(args.item, 'item');
+        const amount = integerValue(args.amount, 1, 6400, 'amount', 1);
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body: `chest ${action} ${item} ${amount}`,
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_look',
+      description:
+        '转动视角。yaw 可超出 ±180，pitch 限制在 -90..90；angle 支持 `~` 相对值：90 是绝对值，~0.1 是加 0.1°，~-20 是减 20°，~ 保持不变。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      parameters: {
+        type: 'object',
+        properties: {
+          axis: {
+            type: 'string',
+            enum: ['yaw', 'pitch'],
+            description: 'yaw=水平转向；pitch=俯仰。',
+          },
+          angle: {
+            type: 'string',
+            description: '角度，支持 `~` 相对写法：90、~0.1、~-20、~。',
+          },
+        },
+        required: ['axis', 'angle'],
+        additionalProperties: false,
+      },
+      async run(args, exec) {
+        const axis = enumValue(args.axis, ['yaw', 'pitch'], 'axis');
+        const angle = requireToken(args.angle, 'angle');
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body: `look ${axis} ${angle}`,
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_eat',
+      description:
+        '吃掉或喝掉主手上的可消耗物品（食物、药水、牛奶桶、蜂蜜瓶、蜘蛛眼等），等消耗完成再返回。只使用主手这一格，不搜索背包、不自动切快捷栏；amount 超过主手堆叠数会直接报错。生存模式饱食度已满会报错；创造模式堆叠不减少，但仍按 amount 次数完成。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      parameters: {
+        type: 'object',
+        properties: {
+          amount: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 2304,
+            description: '要消耗的数量，默认 1；不能超过主手这一格的堆叠数。',
+          },
+        },
+        additionalProperties: false,
+      },
+      async run(args, exec) {
+        const amount = integerValue(args.amount, 1, 2304, 'amount', 1);
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body: `eat ${amount}`,
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_mine',
+      description:
+        '用当前主手物品挖掉准星瞄准的方块，等方块真正消失再返回。不会自动换工具、换快捷栏或收集掉落；没瞄准方块、基岩/屏障等不可破坏方块、权限或世界边界限制、挖掘中目标变化或走出交互距离都会直接报错。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      async run(_args, exec) {
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body: 'mine',
             timeoutMs: TIMEOUT.op,
             signal: exec.signal,
           })
@@ -615,7 +874,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_baritone',
       description:
-        '执行一条 Baritone 命令（寻路 / 自动采集 / 停止）。等价于聊天框里的 `#<命令>`，但不发聊天包；一次只能一条。命令输出仍在聊天栏，用 mc_chat 读取。含 `bt` 或 `#` 前缀也接受。',
+        '执行一条 Baritone 命令（寻路 / 自动采集 / 停止）。等价于聊天框里的 `#<命令>`，但不发聊天包；一次只能一条。命令输出仍在聊天栏，用 mc_chat 读取。',
       timeoutMs: TOOL_TIMEOUT.baritone,
       parameters: {
         type: 'object',
@@ -690,7 +949,7 @@ export function registerBridgeTools(ctx, config) {
             },
             additionalProperties: false,
             description:
-              '仅 action=config 时使用：只改出现的字段（range 0.5–6.0、fov 1–360、minAttackCharge 0–1）；实体 ID 数组元素可省略 minecraft: 前缀；任一字段非法时整个请求 400、文件不改。旧字段 targetHostile / targetPassive / alwaysTargets 已移除。',
+              '仅 action=config 时使用：只改出现的字段（range 0.5–6.0、fov 1–360、minAttackCharge 0–1）；实体 ID 数组元素可省略 minecraft: 前缀；任一字段非法时整个请求 400、文件不改。',
           },
         },
         required: ['action'],
@@ -725,7 +984,7 @@ export function registerBridgeTools(ctx, config) {
     imageDefinition({
       name: 'mc_request',
       description:
-        '直接调用游戏侧共享 HTTP 服务上任意以 / 开头的 endpoint，供以后新增、尚未封装成专用工具的接口使用。有专用工具（mc_status/mc_help/mc_player/mc_baritone/mc_killaura/mc_control/mc_op 等）时优先用专用工具。endpoint 必须是相对路径，不能是完整 URL；非 2xx 会以错误结果返回状态码与模组原文。',
+        '直接调用游戏侧共享 HTTP 服务上任意以 / 开头的 endpoint，供以后新增、尚未封装成专用工具的接口使用。有专用工具（mc_status / mc_help / mc_player / mc_craft / mc_hotbar / mc_furnace / mc_chest / mc_look / mc_eat / mc_mine / mc_baritone / mc_killaura / mc_control 等）时优先用专用工具。endpoint 必须是相对路径，不能是完整 URL；非 2xx 会以错误结果返回状态码与模组原文。',
       timeoutMs: TOOL_TIMEOUT.request,
       parameters: {
         type: 'object',
