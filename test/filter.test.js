@@ -10,19 +10,14 @@ import { apply } from '../filter.js';
 
 /**
  * 造一个只提供 tools 的假 Context。
- * @param {object} [options] - 是否注册 working_directory。
  * @returns {object} ctx 与记录。
  */
-function fakeContext(options = {}) {
+function fakeContext() {
   const restricted = [];
   const effects = [];
   const ctx = {
     logger: { info() {}, warn() {} },
     tools: {
-      get(name) {
-        if (options.hasWorkingDirectory === false) return undefined;
-        return name === 'working_directory' ? { name } : undefined;
-      },
       restrict(filter) {
         restricted.push(filter);
         return () => {};
@@ -35,14 +30,8 @@ function fakeContext(options = {}) {
   return { ctx, restricted, effects };
 }
 
-test('working_directory 存在时在 MC 模式 scope 上 deny 掉', () => {
+test('MC 模式用空 allow 白名单遮掉全部继承工具', () => {
   const { ctx, restricted } = fakeContext();
   apply(ctx);
-  assert.deepEqual(restricted, [{ deny: ['working_directory'] }]);
-});
-
-test('working_directory 不存在时静默跳过', () => {
-  const { ctx, restricted } = fakeContext({ hasWorkingDirectory: false });
-  apply(ctx);
-  assert.deepEqual(restricted, []);
+  assert.deepEqual(restricted, [{ allow: [] }]);
 });

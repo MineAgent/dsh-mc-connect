@@ -19,6 +19,8 @@
  * @module dsh-mc-connect/bridge
  */
 
+import { randomUUID } from 'node:crypto';
+
 /** 各类请求的超时：/op 的合成与含 type 的 /ctl 请求都会同步阻塞到执行结束。 */
 const TIMEOUT = {
   read: 15_000,
@@ -31,8 +33,7 @@ const TIMEOUT = {
   request: 30_000,
 };
 
-/** 通用兜底请求允许的最大超时与响应体大小。 */
-const REQUEST_MAX_TIMEOUT = 180_000;
+/** 通用兜底请求允许的最大响应体大小。 */
 const REQUEST_MAX_BYTES = 8 * 1024 * 1024;
 
 /** 工具调用预算：比内部超时多留一点，让内部超时先给出中文说明。 */
@@ -112,7 +113,18 @@ const NO_PARAMETERS = { type: 'object', properties: {}, additionalProperties: fa
 /** 桥接层自身的失败（连不上、超时、非 200）；正文直接给模型看。 */
 class BridgeError extends Error {}
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * 递归冻结一条待投递消息，避免投递后仍被调用方修改。
+ * @param {object} value - 消息对象。
+ * @returns {object} 同一对象。
+ */
+function deepFreeze(value) {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) deepFreeze(item);
+  }
+  return value;
+}
 
 /**
  * 把非 2xx 响应整理成一句给模型看的错误。
@@ -227,6 +239,48 @@ function parseHeaderLines(lines) {
   return headers;
 }
 
+/**
+ * 校验并归一化 `mc_request` 的参数；同步抛错，便于在提交后台任务前拒绝坏参数。
+ * @param {object} args - 工具参数。
+ * @returns {{path: string, verb: string, body: string | undefined, headers: object, responseType: string}}
+ *   可直接用于请求的字段。
+ */
+function prepareRequest(args) {
+  const path = typeof args.endpoint === 'string' ? args.endpoint.trim() : '';
+  if (!path.startsWith('/')) {
+    throw new BridgeError(
+      'endpoint 必须以 / 开头（例如 `/ka/state`），不能写完整 URL 或主机名。',
+    );
+  }
+
+  const verb = enumValue(args.method, METHODS, 'method', 'GET').toUpperCase();
+  if (args.body !== undefined && (verb === 'GET' || verb === 'HEAD')) {
+    throw new BridgeError(`${verb} 请求不能带 body。`);
+  }
+  if (args.body !== undefined && typeof args.body !== 'string') {
+    throw new BridgeError('body 必须是字符串。');
+  }
+
+  const headers = parseHeaderLines(args.headers);
+  const hasContentType = Object.keys(headers).some(
+    (name) => name.toLowerCase() === 'content-type',
+  );
+  if (args.body !== undefined && !hasContentType) {
+    headers['content-type'] =
+      typeof args.contentType === 'string' && args.contentType.length > 0
+        ? args.contentType
+        : 'text/plain; charset=utf-8';
+  }
+
+  const responseType = enumValue(
+    args.responseType,
+    ['auto', 'text', 'image', 'base64'],
+    'responseType',
+    'auto',
+  );
+  return { path, verb, body: args.body, headers, responseType };
+}
+
 /** 从 PNG 的 IHDR 里读画面尺寸，用来在截图结果里说清坐标系。 */
 function pngSize(buffer) {
   if (buffer.length >= 24 && buffer.toString('latin1', 1, 4) === 'PNG') {
@@ -279,18 +333,6 @@ function enumValue(value, allowed, field, fallback) {
 }
 
 /**
- * 归一化 waitMs：缺失为 0，夹到 0–60000。
- * @param {unknown} value - 参数值。
- * @returns {number} 毫秒。
- */
-function waitMsValue(value) {
-  if (value === undefined) return 0;
-  const number = Number(value);
-  if (!Number.isFinite(number)) throw new BridgeError('waitMs 必须是数字。');
-  return Math.min(Math.max(Math.trunc(number), 0), 60_000);
-}
-
-/**
  * 归一化有界整数参数：缺失时用 fallback，否则必须是范围内的整数。
  * @param {unknown} value - 参数值。
  * @param {number} min - 最小值。
@@ -306,18 +348,6 @@ function integerValue(value, min, max, field, fallback) {
     throw new BridgeError(`${field} 必须是 ${min}–${max} 的整数。`);
   }
   return number;
-}
-
-/**
- * 归一化通用请求的超时：默认 30000，夹到 1000–180000。
- * @param {unknown} value - 参数值。
- * @returns {number} 毫秒。
- */
-function requestTimeout(value) {
-  if (value === undefined) return TIMEOUT.request;
-  const number = Number(value);
-  if (!Number.isFinite(number)) throw new BridgeError('timeoutMs 必须是数字。');
-  return Math.min(Math.max(Math.trunc(number), 1_000), REQUEST_MAX_TIMEOUT);
 }
 
 /**
@@ -376,6 +406,7 @@ function textDefinition(spec) {
     description: spec.description,
     parameters: spec.parameters ?? NO_PARAMETERS,
     timeoutMs: spec.timeoutMs,
+    validate: spec.validate,
     output: {
       schema: TEXT_SCHEMA,
       render(_args, value) {
@@ -399,6 +430,7 @@ function imageDefinition(spec) {
     description: spec.description,
     parameters: spec.parameters ?? NO_PARAMETERS,
     timeoutMs: spec.timeoutMs,
+    validate: spec.validate,
     output: {
       schema: IMAGE_SCHEMA,
       render(_args, value) {
@@ -430,6 +462,74 @@ function imageDefinition(spec) {
 export function registerBridgeTools(ctx, config) {
   const baseUrl = config.baseUrl;
   const request = makeRequest(baseUrl);
+  const jobs = new Set();
+
+  /**
+   * 把后台任务结果投递回发起工具调用的会话。
+   * @param {object | undefined} agent - 发起调用的 Agent。
+   * @param {string} name - 工具名。
+   * @param {string} id - 任务 id。
+   * @param {{text: string, image?: object, failed?: boolean}} value - 结果。
+   * @returns {Promise<void>}
+   */
+  async function deliverJobResult(agent, name, id, value) {
+    if (agent === undefined) return;
+    const body = typeof value?.text === 'string' ? value.text : '';
+    const status = value?.failed === true ? '失败' : '完成';
+    const content = [{ type: 'text', text: `Minecraft 工具 ${name}（${id}）${status}：\n\n${body}` }];
+    if (value?.image !== undefined) content.push({ type: 'image', attachment: value.image });
+    const message = deepFreeze({
+      id: randomUUID(),
+      role: 'user',
+      content,
+      source: { kind: 'mc-tool' },
+    });
+
+    try {
+      if (agent.status === 'running') agent.inject(message);
+      else agent.followup(message);
+      await ctx.get('sessions')?.flush?.(agent.session);
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `mc-connect: could not deliver ${name} result: ${String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * 提交一个后台工具任务，立即返回任务 id。
+   * @param {object} definition - 已清洗的工具定义。
+   * @param {object} args - 工具参数。
+   * @param {object} exec - 工具执行上下文。
+   * @returns {{text: string}} 立即返回的提交回执。
+   */
+  function submitJob(definition, args, exec) {
+    const name = definition.name;
+    const id = randomUUID().slice(0, 8);
+    const controller = new AbortController();
+    const job = { id, controller };
+    jobs.add(job);
+    const jobExec = { ...exec, signal: controller.signal };
+
+    void (async () => {
+      let value;
+      try {
+        value = await definition.execute(args, jobExec);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        value = {
+          text: error instanceof Error ? error.message : String(error),
+          failed: true,
+        };
+      } finally {
+        jobs.delete(job);
+      }
+      if (controller.signal.aborted) return;
+      await deliverJobResult(exec.agent, name, id, value);
+    })();
+
+    return { text: `已提交 ${name}（${id}），结果稍后作为消息送达。` };
+  }
 
   /**
    * 一次快照式读取（/aif/*）。
@@ -571,7 +671,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_control',
       description:
-        '把一段输入序列交给游戏。多行或用 `;` 分隔，严格按顺序执行。按键/鼠标这类定时动作是排队的，命令一被接受就返回，用 waitMs 等它做完。含 `type`/`typeEnter` 需要当前有聚焦的文本框，否则整个请求失败、什么都不执行。',
+        '把一段输入序列交给游戏。多行或用 `;` 分隔，严格按顺序执行。按键/鼠标这类定时动作是排队的，命令一被接受就返回，结果稍后作为消息送达。含 `type`/`typeEnter` 需要当前有聚焦的文本框，否则整个请求失败、什么都不执行。',
       timeoutMs: TOOL_TIMEOUT.control,
       parameters: {
         type: 'object',
@@ -581,18 +681,15 @@ export function registerBridgeTools(ctx, config) {
             description:
               'mcctl 命令文本，不能为空。常用：`W 500` 按住 W 500ms（默认 50）；`W+Ctrl 100` 同时按住多键；`mouse left|right|mid [ms]`；`mouse move <dx> <dy>` 相对移动（+右 +下）；`mouse goto <x> <y>` 移到窗口像素坐标；`mouse scroll <n>`；`delay <ms> <命令>`；`release` 立刻松开全部；`chat <文本>` 发聊天（`/` 开头当指令）；`type <文本>` 打进聚焦文本框（`\\n` 表示回车）；`typeEnter` 在文本框里回车。按键名不分大小写：A–Z、0–9、F1–F12、SPACE/TAB/ENTER/BACKSPACE/ESC/UP/DOWN/LEFT/RIGHT 等；单次时长与 delay 上限 600000ms。完整语法用 mc_help。',
           },
-          waitMs: {
-            type: 'integer',
-            description:
-              '命令被接受后等待这么久（毫秒，整数，0–60000，默认 0）再返回，用来等一次定时输入做完，省掉一次单独的状态读取',
-          },
         },
         required: ['command'],
         additionalProperties: false,
       },
+      validate(args) {
+        requireCommand(args.command, 'command');
+      },
       async run(args, exec) {
         const command = requireCommand(args.command, 'command');
-        const wait = waitMsValue(args.waitMs);
         const body = await request('/ctl/', {
           method: 'POST',
           body: command,
@@ -606,10 +703,6 @@ export function registerBridgeTools(ctx, config) {
           summary = `已接受 ${actions.length} 个动作：${actions.join(' → ') || '(无)'}\n队列中：${parsed.queued} 个请求，在世界里：${parsed.inWorld}`;
         } catch {
           // 正文不是 JSON（理论上不会）时原样返回
-        }
-        if (wait > 0) {
-          await sleep(wait);
-          summary += `\n已等待 ${wait}ms。`;
         }
         return summary;
       },
@@ -827,7 +920,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_eat',
       description:
-        '吃掉或喝掉主手上的可消耗物品（食物、药水、牛奶桶、蜂蜜瓶、蜘蛛眼等），等消耗完成再返回。只使用主手这一格，不搜索背包、不自动切快捷栏；amount 超过主手堆叠数会直接报错。生存模式饱食度已满会报错；创造模式堆叠不减少，但仍按 amount 次数完成。',
+        '吃掉或喝掉主手上的可消耗物品（食物、药水、牛奶桶、蜂蜜瓶、蜘蛛眼等）。立即返回任务 id，吃完或失败的结果稍后作为消息送达。只使用主手这一格，不搜索背包、不自动切快捷栏；amount 超过主手堆叠数会直接报错。生存模式饱食度已满会报错；创造模式堆叠不减少，但仍按 amount 次数完成。',
       timeoutMs: TOOL_TIMEOUT.op,
       parameters: {
         type: 'object',
@@ -840,6 +933,9 @@ export function registerBridgeTools(ctx, config) {
           },
         },
         additionalProperties: false,
+      },
+      validate(args) {
+        integerValue(args.amount, 1, 2304, 'amount', 1);
       },
       async run(args, exec) {
         const amount = integerValue(args.amount, 1, 2304, 'amount', 1);
@@ -857,7 +953,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_mine',
       description:
-        '用当前主手物品挖掉准星瞄准的方块，等方块真正消失再返回。不会自动换工具、换快捷栏或收集掉落；没瞄准方块、基岩/屏障等不可破坏方块、权限或世界边界限制、挖掘中目标变化或走出交互距离都会直接报错。',
+        '用当前主手物品挖掉准星瞄准的方块。立即返回任务 id，方块消失或失败的结果稍后作为消息送达。不会自动换工具、换快捷栏或收集掉落；没瞄准方块、基岩/屏障等不可破坏方块、权限或世界边界限制、挖掘中目标变化或走出交互距离都会报错。',
       timeoutMs: TOOL_TIMEOUT.op,
       async run(_args, exec) {
         return (
@@ -884,30 +980,19 @@ export function registerBridgeTools(ctx, config) {
             description:
               '一条 Baritone 命令，不能为空。常用：`goal <x> <y> <z>` 或 `goal ~ ~ ~20`；`goto <x> <y> <z>`；`mine <方块id>`；`stop`；`proc`。完整语法用 mc_help({prefix:"bt"})。',
           },
-          waitMs: {
-            type: 'integer',
-            description:
-              '命令被接受后等待这么久（毫秒，整数，0–60000，默认 0）再返回；Baritone 的进度仍要用 mc_chat / mc_player 对账',
-          },
         },
         required: ['command'],
         additionalProperties: false,
       },
       async run(args, exec) {
         const command = requireCommand(args.command, 'command');
-        const wait = waitMsValue(args.waitMs);
         const body = await request('/bt/', {
           method: 'POST',
           body: command,
           timeoutMs: TIMEOUT.baritone,
           signal: exec.signal,
         });
-        let summary = body.trim();
-        if (wait > 0) {
-          await sleep(wait);
-          summary += `\n已等待 ${wait}ms。`;
-        }
-        return summary;
+        return body.trim();
       },
     }),
 
@@ -984,7 +1069,7 @@ export function registerBridgeTools(ctx, config) {
     imageDefinition({
       name: 'mc_request',
       description:
-        '直接调用游戏侧共享 HTTP 服务上任意以 / 开头的 endpoint，供以后新增、尚未封装成专用工具的接口使用。有专用工具（mc_status / mc_help / mc_player / mc_craft / mc_hotbar / mc_furnace / mc_chest / mc_look / mc_eat / mc_mine / mc_baritone / mc_killaura / mc_control 等）时优先用专用工具。endpoint 必须是相对路径，不能是完整 URL；非 2xx 会以错误结果返回状态码与模组原文。',
+        '直接调用游戏侧共享 HTTP 服务上任意以 / 开头的 endpoint，供以后新增、尚未封装成专用工具的接口使用。立即返回任务 id，响应或错误稍后作为消息送达。有专用工具（mc_status / mc_help / mc_player / mc_craft / mc_hotbar / mc_furnace / mc_chest / mc_look / mc_eat / mc_mine / mc_baritone / mc_killaura / mc_control 等）时优先用专用工具。endpoint 必须是相对路径，不能是完整 URL；非 2xx 会返回状态码与模组原文。',
       timeoutMs: TOOL_TIMEOUT.request,
       parameters: {
         type: 'object',
@@ -1009,7 +1094,6 @@ export function registerBridgeTools(ctx, config) {
             type: 'string',
             description: '带 body 且 headers 没指定 content-type 时使用，默认 text/plain; charset=utf-8',
           },
-          timeoutMs: { type: 'integer', description: '超时（毫秒，默认 30000，夹到 1000–180000）' },
           responseType: {
             type: 'string',
             enum: ['auto', 'text', 'image', 'base64'],
@@ -1020,39 +1104,16 @@ export function registerBridgeTools(ctx, config) {
         required: ['endpoint'],
         additionalProperties: false,
       },
+      validate(args) {
+        prepareRequest(args);
+      },
       async run(args, exec) {
-        const path = typeof args.endpoint === 'string' ? args.endpoint.trim() : '';
-        if (!path.startsWith('/')) {
-          throw new BridgeError(
-            'endpoint 必须以 / 开头（例如 `/ka/state`），不能写完整 URL 或主机名。',
-          );
-        }
-
-        const verb = enumValue(args.method, METHODS, 'method', 'GET').toUpperCase();
-        if (args.body !== undefined && (verb === 'GET' || verb === 'HEAD')) {
-          throw new BridgeError(`${verb} 请求不能带 body。`);
-        }
-        if (args.body !== undefined && typeof args.body !== 'string') {
-          throw new BridgeError('body 必须是字符串。');
-        }
-
-        const requestHeaders = parseHeaderLines(args.headers);
-        const hasContentType = Object.keys(requestHeaders).some(
-          (name) => name.toLowerCase() === 'content-type',
-        );
-        if (args.body !== undefined && !hasContentType) {
-          requestHeaders['content-type'] =
-            typeof args.contentType === 'string' && args.contentType.length > 0
-              ? args.contentType
-              : 'text/plain; charset=utf-8';
-        }
-
-        const timeout = requestTimeout(args.timeoutMs);
+        const { path, verb, body, headers, responseType } = prepareRequest(args);
         const response = await request.raw(path, {
           method: verb,
-          body: args.body,
-          headers: requestHeaders,
-          timeoutMs: timeout,
+          body,
+          headers,
+          timeoutMs: TIMEOUT.request,
           signal: exec.signal,
         });
         const declaredLength = Number(response.headers.get('content-length'));
@@ -1077,12 +1138,6 @@ export function registerBridgeTools(ctx, config) {
           throw new BridgeError(lines.join('\n'));
         }
 
-        const responseType = enumValue(
-          args.responseType,
-          ['auto', 'text', 'image', 'base64'],
-          'responseType',
-          'auto',
-        );
         const isImage = type.toLowerCase().startsWith('image/');
         if (responseType === 'image' && !isImage) {
           throw new BridgeError(`响应不是图片（content-type: ${type || '未提供'}）。`);
@@ -1104,8 +1159,23 @@ export function registerBridgeTools(ctx, config) {
     }),
   ];
 
-  const disposers = definitions.map((definition) => ctx.tools.register(definition));
+  const asyncTools = new Set(['mc_control', 'mc_eat', 'mc_mine', 'mc_request']);
+  const registered = definitions.map((definition) => {
+    const { validate, ...base } = definition;
+    if (!asyncTools.has(base.name)) return base;
+    return {
+      ...base,
+      async execute(args, exec) {
+        const input = args ?? {};
+        validate?.(input);
+        return submitJob(base, input, exec);
+      },
+    };
+  });
+  const disposers = registered.map((definition) => ctx.tools.register(definition));
   return () => {
+    for (const job of jobs) job.controller.abort();
+    jobs.clear();
     for (const dispose of disposers) dispose();
   };
 }

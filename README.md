@@ -31,7 +31,7 @@ dsh-mc-connect/
 ├── events.js             # 3422 监听、订阅、投递、投递开关、状态路由
 ├── lua.js                # advanced 订阅的常驻 Lua 进程、协议与临时脚本
 ├── config.js             # 行配置归一化与校验
-├── filter.js             # MC 模式隐藏继承来的 working_directory
+├── filter.js             # MC 模式隐藏全部继承来的宿主工具
 ├── client.js             # 浏览器端：composer dock + 设置页
 ├── locale/en.json、locale/zh.json
 ├── icon.svg
@@ -44,10 +44,10 @@ dsh-mc-connect/
 preset id 是 `mc`，显示名「MC 模式」，`order: 5`。
 
 - **工具面**：19 个 `mc_*` + `subscribe_mc_event` / `get_mc_event_types` +
-  `todo_write` / `create_goal` / `get_goal` / `update_goal` / `ask_user_question` /
-  `exit_plan_mode`。
-- 宿主全局层继承来的 `working_directory` 由 `dsh-mc-connect/filter` 在 MC 模式
-  scope 上遮掉；浏览器/文件/网络/子 Agent 工具都看不到。
+  `ask_user_question` / `exit_plan_mode`。
+- 宿主全局层继承来的工具由 `dsh-mc-connect/filter` 用空 `allow` 白名单在 MC 模式
+  scope 上全部遮掉，包括 `fetch_image`、`reasoning_effort`、`working_directory`；
+  浏览器/文件/网络/子 Agent 工具都看不到。
 - **系统提示词整段替换**：`persona` 用 `complete: true` +
   `includeRuntimeContext: false`，只留 1–7 条约定与任务两节。
 
@@ -77,21 +77,29 @@ preset id 是 `mc-plus`，显示名「MC 模式+」，`order: 8`。
 | `mc_chat` | `GET /aif/msg` | 增量聊天回显，**读取即清空** |
 | `mc_screenshot` | `GET /ctl/prtsc` | 当前帧 PNG；模型支持图片时作为图片返回 |
 | `mc_cursor` | `GET /ctl/mouse` | 光标像素坐标 / GUI 坐标 / 界面类名 |
-| `mc_control` | `POST /ctl/` | 按键 / 鼠标 / 视角 / `chat` / `type`，支持 `waitMs` |
+| `mc_control` | `POST /ctl/` | 按键 / 鼠标 / 视角 / `chat` / `type`；异步返回 |
 | `mc_craft` | `POST /op/` `craft <物品id> [数量]` | 合成，等结束；3×3 配方要先打开工作台 |
 | `mc_hotbar` | `POST /op/` `inventory <物品id> [1-9]` | 把背包物品换到快捷栏第 N 格 |
 | `mc_furnace` | `POST /op/` `furnace put/get ...` | 在打开着的熔炉界面放入或取出 |
 | `mc_chest` | `POST /op/` `chest put/get ...` | 在打开着的箱子界面放入或取出 |
 | `mc_look` | `POST /op/` `look <yaw/pitch> <角度>` | 转视角，支持 `~` 相对值 |
-| `mc_eat` | `POST /op/` `eat [数量]` | 吃/喝主手可消耗物品，等吃完再返回；不搜索背包、不切快捷栏 |
-| `mc_mine` | `POST /op/` `mine` | 用当前主手物品挖准星方块，等挖掉再返回；不换工具、不收集掉落 |
-| `mc_baritone` | `POST /bt/` | 一条 Baritone 命令，支持 `waitMs` |
+| `mc_eat` | `POST /op/` `eat [数量]` | 异步吃/喝主手可消耗物品；不搜索背包、不切快捷栏 |
+| `mc_mine` | `POST /op/` `mine` | 异步用当前主手物品挖准星方块；不换工具、不收集掉落 |
+| `mc_baritone` | `POST /bt/` | 一条 Baritone 命令，返回接受结果 |
 | `mc_killaura` | `GET /ka/state`、`POST /ka/{on,off,toggle,reload,config}` | 状态 / 开关 / 读配置 / JSON patch 配置 |
-| `mc_request` | 任意 `/` 开头 endpoint | 兜底 HTTP 调用，供以后新增接口使用 |
+| `mc_request` | 任意 `/` 开头 endpoint | 异步兜底 HTTP 调用，供以后新增接口使用 |
 
 工具描述、参数校验和错误文案移植自 `MCPServer`：命令为空、endpoint 不是 `/` 开头、
 GET 带 body、headers 格式错误等都会直接给模型一句可读的中文原因。游戏没开时返回
 「连不上 …：Minecraft 客户端没在运行，或 MGHttpdProvider 没加载」。
+
+### 异步工具
+
+`mc_control`、`mc_eat`、`mc_mine`、`mc_request` 立即返回「已提交 + 任务 id」，
+实际 HTTP 请求在后台继续；完成后把结果作为新的 user 消息投递给同一个 Agent：
+Agent 正在跑回合时进入下一步，空闲时唤醒新回合。文本结果直接投递，图片结果带
+image block；失败也以消息返回。其余工具保持同步返回。模型可见的 `waitMs` /
+`timeoutMs` 参数已删除，内部仍保留固定超时防止任务永久挂住。
 
 ### 截图与图片
 
@@ -341,7 +349,7 @@ curl -s http://127.0.0.1:3080/api/dsh-mc-connect/listener
 - Lua 沙箱：白名单 API、`io`/`os.execute`/`getenv`/`require`/`load`/`getfenv`
   不可用、`print` 不能伪造协议、table-only 元表、二进制 chunk 拒绝、Lua 5.1 兼容；
 - 投递开关暂停/恢复、会话列表与清除、唯一界面路由、非回环与非法开关值；
-- `working_directory` 收口与单包 manifest / client id。
+- 宿主继承工具的白名单收口、异步任务投递与单包 manifest / client id。
 
 ## 许可证
 

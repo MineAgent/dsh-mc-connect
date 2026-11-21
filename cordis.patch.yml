@@ -16,8 +16,8 @@
 # 客户端 bundle，不注册模型工具。
 #
 # MC 模式 = mc_* + 事件工具 + 流程工具；MC+ = 标准模式全部工具 + mc-* + 事件工具。
-# working_directory 会从宿主全局继承进每个 preset，MC 模式用
-# dsh-mc-connect/filter 在自己 scope 上把它遮掉；MC+ 不挂 filter。
+# 宿主全局工具会继承进每个 preset，MC 模式用 dsh-mc-connect/filter 的空
+# allow 白名单在自己 scope 上把全部宿主工具遮掉；MC+ 不挂 filter。
 #
 # dsh-web-app 升级后，如果 standard.patch.yml 的 plugins 清单有增减，下面
 # preset-mc-plus 的副本要跟着同步——它不会自动跟随。
@@ -32,7 +32,7 @@
         description: 把 Minecraft 客户端交给 Agent：只用 mc_* 工具观察和操作游戏，不读写文件、不跑 shell、不联网；玩法由你在对话里说明。
         order: 5
         plugins:
-          # 收口：把宿主层新增的 working_directory 从 MC 模式的继承工具面里移除。
+          # 收口：把宿主层继承来的全部工具从 MC 模式的工具面里移除。
           - id: mc-tool-filter
             name: 'dsh-mc-connect/filter'
           - id: mc-tools
@@ -60,17 +60,9 @@
                 7. 由于思考、进行会阻塞的工具调用时，不会收到消息，因此减少思考强度、减少工具对你的阻塞。
 
                 任务
-                多步任务用 todo_write 记录进度。
-                跨轮次的长期目标用 create_goal 、get_goal 、update_goal。
                 需要用户做选择时用 ask_user_question。
-          - id: tool-goal
-            name: '@deepseek-ai/dsh-tool-goal'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
           - id: planning
             name: cordis:group
             group: true

@@ -131,17 +131,39 @@ function fakeContext(options = {}) {
   return { ctx, tools, saved };
 }
 
-/** 构造一次假执行。 */
+/** 构造一次假执行；异步工具的结果会进入 delivered。 */
 function fakeExec() {
+  const delivered = [];
+  const waiters = [];
+  const push = (message) => {
+    const waiter = waiters.shift();
+    if (waiter !== undefined) waiter(message);
+    else delivered.push(message);
+  };
+  const agent = {
+    status: 'idle',
+    options: { provider: 'fake-provider', model: 'fake-model' },
+    session: {
+      requestHeader() {
+        return { config: { provider: 'fake-provider', model: 'fake-model' } };
+      },
+    },
+    inject: push,
+    followup: push,
+  };
   return {
     signal: new AbortController().signal,
-    agent: {
-      options: { provider: 'fake-provider', model: 'fake-model' },
-      session: {
-        requestHeader() {
-          return { config: { provider: 'fake-provider', model: 'fake-model' } };
-        },
-      },
+    agent,
+    delivered,
+    nextMessage(timeoutMs = 2_000) {
+      if (delivered.length > 0) return Promise.resolve(delivered.shift());
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('async tool message not delivered')), timeoutMs);
+        waiters.push((message) => {
+          clearTimeout(timer);
+          resolve(message);
+        });
+      });
     },
   };
 }
@@ -222,21 +244,21 @@ test('mc_help 校验 prefix', async () => {
   );
 });
 
-test('mc_control 发 POST body、汇总动作并等待 waitMs', async () => {
+test('mc_control 异步提交并投递汇总结果', async () => {
   const { tools } = await loadTools();
-  const value = await tools.get('mc_control').execute({ command: 'W 500', waitMs: 20 }, fakeExec());
+  const exec = fakeExec();
+  const value = await tools.get('mc_control').execute({ command: 'W 500' }, exec);
+  assert.match(value.text, /已提交 mc_control/);
+  const message = await exec.nextMessage();
   assert.equal(lastRequest.method, 'POST');
   assert.equal(lastRequest.url, '/ctl/');
   assert.equal(lastRequest.body, 'W 500');
-  assert.match(value.text, /已接受 1 个动作/);
-  assert.match(value.text, /已等待 20ms/);
+  assert.match(message.content[0].text, /已接受 1 个动作/);
 });
 
-test('mc_control 拒绝空命令，waitMs 被夹取', async () => {
+test('mc_control 立即拒绝空命令', async () => {
   const { tools } = await loadTools();
   await assert.rejects(() => tools.get('mc_control').execute({ command: '  ' }, fakeExec()), /不能为空/);
-  const value = await tools.get('mc_control').execute({ command: 'W', waitMs: -5 }, fakeExec());
-  assert.doesNotMatch(value.text, /已等待/);
 });
 
 test('mc_baritone 发 POST', async () => {
@@ -326,19 +348,29 @@ test('mc_look 发 POST 并校验轴', async () => {
   );
 });
 
-test('mc_eat / mc_mine 发 POST，校验 eat 数量', async () => {
+test('mc_eat / mc_mine 异步提交并投递结果', async () => {
   const { tools } = await loadTools();
   const exec = fakeExec();
-  assert.equal((await tools.get('mc_eat').execute({}, exec)).text, '已食用 1 个');
+  const first = await tools.get('mc_eat').execute({}, exec);
+  assert.match(first.text, /已提交 mc_eat/);
+  const firstMessage = await exec.nextMessage();
   assert.equal(lastRequest.method, 'POST');
   assert.equal(lastRequest.url, '/op/');
   assert.equal(lastRequest.body, 'eat 1');
-  assert.equal((await tools.get('mc_eat').execute({ amount: 3 }, exec)).text, '已食用 3 个');
+  assert.match(firstMessage.content[0].text, /已食用 1 个/);
+
+  await tools.get('mc_eat').execute({ amount: 3 }, exec);
+  const secondMessage = await exec.nextMessage();
   assert.equal(lastRequest.body, 'eat 3');
-  assert.equal((await tools.get('mc_mine').execute({}, exec)).text, '已破坏 石头');
+  assert.match(secondMessage.content[0].text, /已食用 3 个/);
+
+  await tools.get('mc_mine').execute({}, exec);
+  const mineMessage = await exec.nextMessage();
   assert.equal(lastRequest.method, 'POST');
   assert.equal(lastRequest.url, '/op/');
   assert.equal(lastRequest.body, 'mine');
+  assert.match(mineMessage.content[0].text, /已破坏 石头/);
+
   for (const amount of [0, 1.5, 2305]) {
     await assert.rejects(
       () => tools.get('mc_eat').execute({ amount }, exec),
@@ -359,7 +391,7 @@ test('mc_killaura 读状态与更新配置', async () => {
   await assert.rejects(() => tools.get('mc_killaura').execute({ action: 'config' }, exec), /至少要给一个/);
 });
 
-test('mc_request 校验 endpoint、method、body 与 headers', async () => {
+test('mc_request 立即校验 endpoint、method、body 与 headers', async () => {
   const { tools } = await loadTools();
   const exec = fakeExec();
   await assert.rejects(() => tools.get('mc_request').execute({ endpoint: 'ka/state' }, exec), /必须以 \/ 开头/);
@@ -371,25 +403,38 @@ test('mc_request 校验 endpoint、method、body 与 headers', async () => {
     () => tools.get('mc_request').execute({ endpoint: '/', headers: ['nope'] }, exec),
     /不是 "Name: value" 形式/,
   );
-  const text = await tools.get('mc_request').execute({ endpoint: '/ka/state' }, exec);
-  assert.equal(text.text, '{"enabled":false}');
+  const ack = await tools.get('mc_request').execute({ endpoint: '/ka/state' }, exec);
+  assert.match(ack.text, /已提交 mc_request/);
+  const message = await exec.nextMessage();
+  assert.match(message.content[0].text, /\{"enabled":false\}/);
 });
 
-test('mc_request 非 2xx 抛带状态码与正文的错误', async () => {
+test('mc_request 非 2xx 作为后续消息返回', async () => {
   const { tools } = await loadTools();
-  await assert.rejects(
-    () => tools.get('mc_request').execute({ endpoint: '/missing' }, fakeExec()),
-    /HTTP 404 Not Found 路径不存在[\s\S]*没有这个接口/,
-  );
+  const exec = fakeExec();
+  await tools.get('mc_request').execute({ endpoint: '/missing' }, exec);
+  const message = await exec.nextMessage();
+  assert.match(message.content[0].text, /HTTP 404 Not Found 路径不存在[\s\S]*没有这个接口/);
 });
 
-test('mc_request responseType=base64 返回原始字节', async () => {
+test('mc_request responseType=base64 后续消息返回原始字节', async () => {
   const { tools } = await loadTools();
-  const value = await tools.get('mc_request').execute(
+  const exec = fakeExec();
+  await tools.get('mc_request').execute(
     { endpoint: '/image', responseType: 'base64' },
-    fakeExec(),
+    exec,
   );
-  assert.equal(value.text, PNG.toString('base64'));
+  const message = await exec.nextMessage();
+  assert.equal(message.content[0].text.endsWith(PNG.toString('base64')), true);
+});
+
+test('mc_request 图片结果通过消息投递', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  await tools.get('mc_request').execute({ endpoint: '/image', responseType: 'image' }, exec);
+  const message = await exec.nextMessage();
+  assert.equal(message.content[1].type, 'image');
+  assert.equal(message.content[1].attachment.attachmentId, 'att-1');
 });
 
 test('mc_screenshot 在模型支持图片时返回图片内容', async () => {
