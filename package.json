@@ -1,6 +1,6 @@
 {
   "name": "dsh-mc-connect",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "DSH 单包 Minecraft 直连：注册「MC 模式」与「MC 模式+」，原生提供 mc_* 控制/观测工具与 MC 事件订阅（普通投递或 Lua 高级处理），不经过 MCP server。",

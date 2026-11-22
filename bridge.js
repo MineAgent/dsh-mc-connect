@@ -8,7 +8,7 @@
  *
  *   /ctl  mcctl               控制：按键 / 鼠标 / 视角 / 截图 / 聊天 / 打字
  *   /aif  AdvancedInfoFetcher 只读状态：坐标 / 目标方块 / 背包 / 聊天 / 世界
- *   /op   Craft Command       容器操作：合成 / 熔炉 / 箱子 / 快捷栏 / 转向
+ *   /op   Craft Command       客户端操作：合成 / 熔炉 / 箱子 / 快捷栏 / 转向 / 食用 / 挖掘 / 放置
  *   /bt   MGBaritoneConnector Baritone 命令
  *   /ka   Kill Aura          Kill Aura 开关与配置
  *
@@ -35,6 +35,9 @@ const TIMEOUT = {
 
 /** 通用兜底请求允许的最大响应体大小。 */
 const REQUEST_MAX_BYTES = 8 * 1024 * 1024;
+
+/** `wait` 工具允许的最长等待时间（1 小时）。 */
+const MAX_WAIT_MS = 3_600_000;
 
 /** 工具调用预算：比内部超时多留一点，让内部超时先给出中文说明。 */
 const TOOL_TIMEOUT = {
@@ -67,7 +70,7 @@ const STATUS_HINT = {
 const PREFIXES = [
   { key: 'ctl', label: '/ctl 控制' },
   { key: 'aif', label: '/aif 只读状态' },
-  { key: 'op', label: '/op 容器操作' },
+  { key: 'op', label: '/op 合成/容器/放置' },
   { key: 'bt', label: '/bt Baritone' },
   { key: 'ka', label: '/ka Kill Aura' },
 ];
@@ -351,6 +354,19 @@ function integerValue(value, min, max, field, fallback) {
 }
 
 /**
+ * 校验必填整数参数。
+ * @param {unknown} value - 参数值。
+ * @param {number} min - 最小值。
+ * @param {number} max - 最大值。
+ * @param {string} field - 参数名。
+ * @returns {number} 合法整数。
+ */
+function requiredInteger(value, min, max, field) {
+  if (value === undefined) throw new BridgeError(`${field} 不能为空。`);
+  return integerValue(value, min, max, field, min);
+}
+
+/**
  * 把图片保存进 DSH 的附件存储；失败时返回给模型看的诊断文本。
  *
  * 与 dsh-mcp-client 的准入一致：需要 attachment store，并且当前模型路由
@@ -453,7 +469,7 @@ function imageDefinition(spec) {
 }
 
 /**
- * 注册 19 个 Minecraft 控制/观测工具。
+ * 注册 20 个 mc_* 工具和 1 个 wait 工具。
  *
  * @param {object} ctx - preset scope 上下文（提供 tools，可选 attachments/llm）。
  * @param {{ baseUrl: string }} config - 已归一化配置。
@@ -548,7 +564,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_status',
       description:
-        '检查控制服务是否在跑、/ctl（控制）、/aif（只读状态）、/op（容器操作）、/bt（Baritone）、/ka（Kill Aura）五个接口各是否挂载、客户端是否已进入世界，并给出接口索引。刚启动游戏或任何调用异常时先跑它。',
+        '检查控制服务是否在跑、/ctl（控制）、/aif（只读状态）、/op（合成/容器/放置）、/bt（Baritone）、/ka（Kill Aura）五个接口各是否挂载、客户端是否已进入世界，并给出接口索引。刚启动游戏或任何调用异常时先跑它。',
       timeoutMs: TOOL_TIMEOUT.status,
       async run(_args, exec) {
         const index = await request('/', { timeoutMs: TIMEOUT.status, signal: exec.signal });
@@ -600,7 +616,7 @@ export function registerBridgeTools(ctx, config) {
           prefix: {
             type: 'string',
             enum: ['ctl', 'aif', 'op', 'bt', 'ka'],
-            description: 'ctl=控制命令；aif=只读状态；op=容器操作；bt=Baritone 命令；ka=Kill Aura',
+            description: 'ctl=控制命令；aif=只读状态；op=合成/容器/转向/食用/挖掘/放置；bt=Baritone 命令；ka=Kill Aura',
           },
         },
         required: ['prefix'],
@@ -663,7 +679,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_cursor',
       description:
-        '鼠标光标现在的位置：窗口像素坐标、GUI 缩放坐标、是否被窗口抓取、当前界面类名。配合 mc_control 的 `mouse goto` 做绝对定位点击。',
+        '鼠标光标现在的位置，mouse goto之后的点击就按这个坐标命中。',
       timeoutMs: TOOL_TIMEOUT.read,
       run: snapshot('/ctl/mouse', '(没有读到光标位置)'),
     }),
@@ -671,7 +687,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_control',
       description:
-        '把一段输入序列交给游戏。多行或用 `;` 分隔，严格按顺序执行。按键/鼠标这类定时动作是排队的，命令一被接受就返回，结果稍后作为消息送达。含 `type`/`typeEnter` 需要当前有聚焦的文本框，否则整个请求失败、什么都不执行。',
+        '把一段输入序列交给游戏。多行或用 `;` 分隔，严格按顺序执行。按键/鼠标这类定时动作是排队的，命令一被接受就返回，结果稍后作为消息送达。含 `type`/`typeEnter` 需要当前有聚焦的文本框，否则整个请求失败、什么都不执行。mouse goto 只在界面开着时生效（世界里转视角用 mc_look）。',
       timeoutMs: TOOL_TIMEOUT.control,
       parameters: {
         type: 'object',
@@ -709,9 +725,52 @@ export function registerBridgeTools(ctx, config) {
     }),
 
     textDefinition({
+      name: 'wait',
+      description:
+        '等待指定时长后通知你。立即返回任务 id，不阻塞当前回合；到点后发一条「等待时间到了」的消息，适合让游戏先跑一段时间。',
+      timeoutMs: TOOL_TIMEOUT.read,
+      parameters: {
+        type: 'object',
+        properties: {
+          waitMs: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 3_600_000,
+            description: '等待时长（毫秒），1–3600000，最长 1 小时。',
+          },
+        },
+        required: ['waitMs'],
+        additionalProperties: false,
+      },
+      validate(args) {
+        requiredInteger(args.waitMs, 1, MAX_WAIT_MS, 'waitMs');
+      },
+      async run(args, exec) {
+        const waitMs = requiredInteger(args.waitMs, 1, MAX_WAIT_MS, 'waitMs');
+        await new Promise((resolve, reject) => {
+          if (exec.signal.aborted) {
+            reject(new Error('等待已取消'));
+            return;
+          }
+          let timer;
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(new Error('等待已取消'));
+          };
+          timer = setTimeout(() => {
+            exec.signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, waitMs);
+          exec.signal.addEventListener('abort', onAbort, { once: true });
+        });
+        return `等待时间到了（${waitMs}ms）。`;
+      },
+    }),
+
+    textDefinition({
       name: 'mc_craft',
       description:
-        '用背包里的材料合成物品，等合成结束再返回。3×3 配方需要先打开工作台界面；成品放不下、原料不足、配方未解锁或合成格不空都会直接报错。',
+        '用背包里的材料合成物品。',
       timeoutMs: TOOL_TIMEOUT.op,
       parameters: {
         type: 'object',
@@ -920,7 +979,7 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_eat',
       description:
-        '吃掉或喝掉主手上的可消耗物品（食物、药水、牛奶桶、蜂蜜瓶、蜘蛛眼等）。立即返回任务 id，吃完或失败的结果稍后作为消息送达。只使用主手这一格，不搜索背包、不自动切快捷栏；amount 超过主手堆叠数会直接报错。生存模式饱食度已满会报错；创造模式堆叠不减少，但仍按 amount 次数完成。',
+        '吃掉或喝掉主手上的可消耗物品。',
       timeoutMs: TOOL_TIMEOUT.op,
       parameters: {
         type: 'object',
@@ -953,13 +1012,30 @@ export function registerBridgeTools(ctx, config) {
     textDefinition({
       name: 'mc_mine',
       description:
-        '用当前主手物品挖掉准星瞄准的方块。立即返回任务 id，方块消失或失败的结果稍后作为消息送达。不会自动换工具、换快捷栏或收集掉落；没瞄准方块、基岩/屏障等不可破坏方块、权限或世界边界限制、挖掘中目标变化或走出交互距离都会报错。',
+        '用当前主手物品挖掉准星瞄准的方块。',
       timeoutMs: TOOL_TIMEOUT.op,
       async run(_args, exec) {
         return (
           await request('/op/', {
             method: 'POST',
             body: 'mine',
+            timeoutMs: TIMEOUT.op,
+            signal: exec.signal,
+          })
+        ).trim();
+      },
+    }),
+
+    textDefinition({
+      name: 'mc_place',
+      description:
+        '把主手上的方块放到准星瞄准的位置，等同按一次右键。但如果没有放置成功会给出原因，推荐用这个代替mc_control右键。',
+      timeoutMs: TOOL_TIMEOUT.op,
+      async run(_args, exec) {
+        return (
+          await request('/op/', {
+            method: 'POST',
+            body: 'place',
             timeoutMs: TIMEOUT.op,
             signal: exec.signal,
           })
@@ -1069,7 +1145,7 @@ export function registerBridgeTools(ctx, config) {
     imageDefinition({
       name: 'mc_request',
       description:
-        '直接调用游戏侧共享 HTTP 服务上任意以 / 开头的 endpoint，供以后新增、尚未封装成专用工具的接口使用。立即返回任务 id，响应或错误稍后作为消息送达。有专用工具（mc_status / mc_help / mc_player / mc_craft / mc_hotbar / mc_furnace / mc_chest / mc_look / mc_eat / mc_mine / mc_baritone / mc_killaura / mc_control 等）时优先用专用工具。endpoint 必须是相对路径，不能是完整 URL；非 2xx 会返回状态码与模组原文。',
+        '直接调用游戏侧共享 HTTP 服务上任意以 / 开头的 endpoint，供以后新增、尚未封装成专用工具的接口使用。立即返回任务 id，响应或错误稍后作为消息送达。有专用工具时优先用专用工具。endpoint 必须是相对路径，不能是完整 URL；非 2xx 会返回状态码与模组原文。',
       timeoutMs: TOOL_TIMEOUT.request,
       parameters: {
         type: 'object',
@@ -1159,7 +1235,7 @@ export function registerBridgeTools(ctx, config) {
     }),
   ];
 
-  const asyncTools = new Set(['mc_control', 'mc_eat', 'mc_mine', 'mc_request']);
+  const asyncTools = new Set(['mc_control', 'wait', 'mc_eat', 'mc_mine', 'mc_request']);
   const registered = definitions.map((definition) => {
     const { validate, ...base } = definition;
     if (!asyncTools.has(base.name)) return base;

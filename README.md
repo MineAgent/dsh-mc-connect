@@ -12,7 +12,7 @@
 |---|---|
 | 独立 MCP stdio 程序 `minecraft-mcp-bridge` | 不再需要；`bridge.js` 直接 `fetch` `127.0.0.1:3420` |
 | `@deepseek-ai/dsh-mcp-client` 拉起子进程 | 工具用 `ctx.tools.register` 直接注册在 preset scope |
-| 14 个 `mcp__minecraft__*` 工具 | 19 个 `mc_*` 工具 |
+| 14 个 `mcp__minecraft__*` 工具 | 20 个 `mc_*` + `wait` 工具 |
 | `@local/dsh-mc-event` + `@local/dsh-mc-event-ui` 两个包 | 同一个包里的 `events.js` + `client.js` |
 | 事件端口 3422、控制端口 3420 | 不变 |
 
@@ -27,7 +27,7 @@ dsh-mc-connect/
 ├── cordis.patch.yml      # 宿主全局 UI 行 + preset-mc + preset-mc-plus
 ├── index.js              # 宿主全局入口：只注册 UI 状态路由
 ├── tools.js              # preset 入口：mc_* + 事件工具
-├── bridge.js             # 3420 HTTP 客户端与 19 个工具定义
+├── bridge.js             # 3420 HTTP 客户端与 21 个工具定义
 ├── events.js             # 3422 监听、订阅、投递、投递开关、状态路由
 ├── lua.js                # advanced 订阅的常驻 Lua 进程、协议与临时脚本
 ├── config.js             # 行配置归一化与校验
@@ -43,7 +43,7 @@ dsh-mc-connect/
 
 preset id 是 `mc`，显示名「MC 模式」，`order: 5`。
 
-- **工具面**：19 个 `mc_*` + `subscribe_mc_event` / `get_mc_event_types` +
+- **工具面**：20 个 `mc_*` + `wait` + `subscribe_mc_event` / `get_mc_event_types` +
   `ask_user_question` / `exit_plan_mode`。
 - 宿主全局层继承来的工具由 `dsh-mc-connect/filter` 用空 `allow` 白名单在 MC 模式
   scope 上全部遮掉，包括 `fetch_image`、`reasoning_effort`、`working_directory`；
@@ -65,7 +65,7 @@ preset id 是 `mc-plus`，显示名「MC 模式+」，`order: 8`。
   `persona` prefix 在此基础上追加 MC 约定。`dsh-web-app` 升级后如果标准清单
   增减，这份副本要手工同步。
 
-## 工具（19 个）
+## 工具（21 个）
 
 | 工具 | 游戏侧接口 | 说明 |
 |---|---|---|
@@ -76,8 +76,9 @@ preset id 是 `mc-plus`，显示名「MC 模式+」，`order: 8`。
 | `mc_world` | `GET /aif/world` | 维度 / 时间 / 天数 / 天气 |
 | `mc_chat` | `GET /aif/msg` | 增量聊天回显，**读取即清空** |
 | `mc_screenshot` | `GET /ctl/prtsc` | 当前帧 PNG；模型支持图片时作为图片返回 |
-| `mc_cursor` | `GET /ctl/mouse` | 光标像素坐标 / GUI 坐标 / 界面类名 |
-| `mc_control` | `POST /ctl/` | 按键 / 鼠标 / 视角 / `chat` / `type`；异步返回 |
+| `mc_cursor` | `GET /ctl/mouse` | 光标位置；`mouse goto` 之后的点击按这个坐标命中 |
+| `mc_control` | `POST /ctl/` | 按键 / 鼠标 / 视角 / `chat` / `type`；异步返回；`mouse goto` 仅界面开着时生效 |
+| `wait` | 本地计时器 | 等待传入的 `waitMs`，到点后发消息通知 |
 | `mc_craft` | `POST /op/` `craft <物品id> [数量]` | 合成，等结束；3×3 配方要先打开工作台 |
 | `mc_hotbar` | `POST /op/` `inventory <物品id> [1-9]` | 把背包物品换到快捷栏第 N 格 |
 | `mc_furnace` | `POST /op/` `furnace put/get ...` | 在打开着的熔炉界面放入或取出 |
@@ -85,6 +86,7 @@ preset id 是 `mc-plus`，显示名「MC 模式+」，`order: 8`。
 | `mc_look` | `POST /op/` `look <yaw/pitch> <角度>` | 转视角，支持 `~` 相对值 |
 | `mc_eat` | `POST /op/` `eat [数量]` | 异步吃/喝主手可消耗物品；不搜索背包、不切快捷栏 |
 | `mc_mine` | `POST /op/` `mine` | 异步用当前主手物品挖准星方块；不换工具、不收集掉落 |
+| `mc_place` | `POST /op/` `place` | 把主手方块放到准星位置，等同右键；失败会说明原因，优先用它代替 `mc_control` 的右键 |
 | `mc_baritone` | `POST /bt/` | 一条 Baritone 命令，返回接受结果 |
 | `mc_killaura` | `GET /ka/state`、`POST /ka/{on,off,toggle,reload,config}` | 状态 / 开关 / 读配置 / JSON patch 配置 |
 | `mc_request` | 任意 `/` 开头 endpoint | 异步兜底 HTTP 调用，供以后新增接口使用 |
@@ -95,10 +97,10 @@ GET 带 body、headers 格式错误等都会直接给模型一句可读的中文
 
 ### 异步工具
 
-`mc_control`、`mc_eat`、`mc_mine`、`mc_request` 立即返回「已提交 + 任务 id」，
+`mc_control`、`wait`、`mc_eat`、`mc_mine`、`mc_request` 立即返回「已提交 + 任务 id」，
 实际 HTTP 请求在后台继续；完成后把结果作为新的 user 消息投递给同一个 Agent：
 Agent 正在跑回合时进入下一步，空闲时唤醒新回合。文本结果直接投递，图片结果带
-image block；失败也以消息返回。其余工具保持同步返回。模型可见的 `waitMs` /
+image block；失败也以消息返回。其余工具保持同步返回。除 `wait` 自己的 `waitMs` 外，模型可见的 `waitMs` /
 `timeoutMs` 参数已删除，内部仍保留固定超时防止任务永久挂住。
 
 ### 截图与图片
@@ -138,7 +140,7 @@ image block；失败也以消息返回。其余工具保持同步返回。模型
 | `duration_seconds` | integer，0–86400 | 到期自动结束；common 发结束通知，advanced 调 `on_end`；0 = 不设到期 |
 | `max_events` | integer，0–100000 | 收到够这么多条后自动结束；`max_events` 按收到的匹配事件计数，0 = 不限 |
 
-已知事件类型：`player_hurt`、`item_pickup`、`chat`、`hunger_change`、
+已知事件类型：`player_hurt`、`item_pickup`、`chat`、`hunger_change`、`can_sleep`、
 `baritone_task_end`、`dimension_change`、`player_death`、`player_respawn`。
 
 `get_mc_event_types` 读取 `http://127.0.0.1:3420/evt/` 的静态事件目录，返回每种
@@ -290,11 +292,16 @@ dsh plugin --profile web add "link:$PWD"
 
 ### 游戏侧
 
-`.minecraft/mods` 里需要：
+`.minecraft/mods` 里需要（下表是本包当前对齐的版本）：
 
-- `httpdprovider` + `mcctl` + `advanced-info-fetch` + `craftcmd`，共享 HTTP 服务监听
-  `127.0.0.1:3420`（游戏窗口标题会带 ` - 3420`）；
-- 事件订阅另需 MC Event Reporter（`events` 模组），默认 POST 到 `127.0.0.1:3422`；
+| 模组 | 版本 | 作用 |
+|---|---|---|
+| `httpdprovider` | 1.2.1 | 共享 HTTP 服务 `127.0.0.1:3420` |
+| `mcctl` | 2.0.0 | `/ctl` 控制 |
+| `advanced-info-fetch` | 1.7.1 | `/aif` 只读状态 |
+| `craftcmd` | 1.5.0 | `/op` 合成 / 容器 / 放置 |
+
+- 事件订阅另需 MC Event Reporter 1.2.0（`events` 模组），默认 POST 到 `127.0.0.1:3422`；
 - advanced（Lua）订阅需要系统里有可用的 `lua` 命令（Lua 5.1+），或把
   `luaCommand` 指向其他解释器；本机 `/usr/bin/lua` 已可用；
 - 可选：`mgbaritoneconnector` + Baritone（`/bt`）、`killaura`（`/ka`）。
@@ -341,7 +348,7 @@ curl -s http://127.0.0.1:3080/api/dsh-mc-connect/listener
 `node --test test/` 使用假 Context 与真实 localhost HTTP，不依赖 DSH 或真实游戏，
 覆盖：
 
-- 19 个 `mc_*` 的注册、参数校验、请求体、错误路径、截图图片准入与降级；
+- 20 个 `mc_*` 与 `wait` 的注册、参数校验、请求体、错误路径、截图图片准入与降级；
 - 事件订阅、过滤、合并、`steer`/`followup`、冷启动、停止、过期、`max_events`、
   端口冲突、两个 preset 实例共享监听器；
 - advanced Lua：启动握手、事件不自动投递、`send`/`forward`、`mc.request`、

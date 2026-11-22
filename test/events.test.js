@@ -698,6 +698,7 @@ test('工具描述包含已知事件类型与不可信提示', () => {
   try {
     assert.match(ctx.tool.description, /player_hurt/);
     assert.match(ctx.tool.description, /player_death/);
+    assert.match(ctx.tool.description, /can_sleep/);
     assert.match(ctx.tool.description, /untrusted in-game text/);
     assert.match(ctx.tool.description, /action:"start"/);
     const blocks = ctx.tool.output.render(
@@ -722,6 +723,7 @@ const CATALOG_TEXT = `player_hurt damage_type attacker_type attacker health_befo
 item_pickup item count
 chat message
 hunger_change from to threshold
+can_sleep reason
 baritone_task_end result goal
 dimension_change from to
 player_death message damage_type attacker attacker_type
@@ -747,7 +749,7 @@ test('get_mc_event_types 解析目录并渲染字段', async () => {
     const result = await ctx.catalogTool.execute({}, exec);
     assert.equal(result.ok, true);
     assert.equal(result.endpoint, catalogUrl);
-    assert.equal(result.count, 8);
+    assert.equal(result.count, 9);
     assert.deepEqual(
       result.events[0].fields,
       [
@@ -766,9 +768,11 @@ test('get_mc_event_types 解析目录并渲染字段', async () => {
       ],
     );
     assert.deepEqual(result.events[1], { type: 'item_pickup', fields: ['item', 'count'] });
+    assert.deepEqual(result.events[4], { type: 'can_sleep', fields: ['reason'] });
     const blocks = ctx.catalogTool.output.render({}, result);
-    assert.match(blocks[0].text, /Minecraft event types \(8\)/);
+    assert.match(blocks[0].text, /Minecraft event types \(9\)/);
     assert.match(blocks[0].text, /player_hurt \(12 field\(s\)\): damage_type/);
+    assert.match(blocks[0].text, /can_sleep \(1 field\(s\)\): reason/);
     assert.match(blocks[0].text, /data/);
   } finally {
     ctx.dispose();

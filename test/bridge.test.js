@@ -1,8 +1,8 @@
 /**
  * dsh-mc-connect 直连桥的离线测试。
  *
- * 用真实 localhost HTTP 假服务替代 Minecraft 的 3420 接口，验证 19 个
- * mc_* 工具的参数、请求、错误路径与截图图片准入。
+ * 用真实 localhost HTTP 假服务替代 Minecraft 的 3420 接口，验证 20 个
+ * mc_* 与 wait 工具的参数、请求、错误路径与截图图片准入。
  *
  *   node --test test/bridge.test.js
  */
@@ -57,6 +57,7 @@ before(async () => {
         if (body === 'eat 1') return send(200, '已食用 1 个');
         if (body === 'eat 3') return send(200, '已食用 3 个');
         if (body === 'mine') return send(200, '已破坏 石头');
+        if (body === 'place') return send(200, '已放置 石头');
         if (body.startsWith('craft ')) return send(200, '合成了 1 个');
         if (body.startsWith('inventory ')) return send(200, '已换到快捷栏');
         if (body.startsWith('furnace ')) return send(200, '熔炉操作完成');
@@ -179,7 +180,7 @@ async function loadTools(options = {}) {
   return { tools, saved, ctx };
 }
 
-test('注册 19 个 mc_* 工具，参数都是对象 schema', async () => {
+test('注册 20 个 mc_* 与 wait 工具，参数都是对象 schema', async () => {
   const { tools } = await loadTools();
   assert.deepEqual([...tools.keys()].sort(), [
     'mc_baritone',
@@ -196,11 +197,13 @@ test('注册 19 个 mc_* 工具，参数都是对象 schema', async () => {
     'mc_killaura',
     'mc_look',
     'mc_mine',
+    'mc_place',
     'mc_player',
     'mc_request',
     'mc_screenshot',
     'mc_status',
     'mc_world',
+    'wait',
   ]);
   for (const definition of tools.values()) {
     assert.equal(definition.parameters.type, 'object');
@@ -231,7 +234,7 @@ test('mc_status 汇总接口挂载情况', async () => {
   const value = await tools.get('mc_status').execute({}, fakeExec());
   assert.match(value.text, /服务：http:\/\/127\.0\.0\.1:\d+ 可连接/);
   assert.match(value.text, /\/ctl 控制：可用/);
-  assert.match(value.text, /\/op 容器操作：不可用/);
+  assert.match(value.text, /\/op 合成\/容器\/放置：不可用/);
   assert.match(value.text, /世界：已进入世界/);
   assert.match(value.text, /接口索引：/);
 });
@@ -348,6 +351,23 @@ test('mc_look 发 POST 并校验轴', async () => {
   );
 });
 
+test('wait 后台等待后投递通知', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  const ack = await tools.get('wait').execute({ waitMs: 20 }, exec);
+  assert.match(ack.text, /已提交 wait/);
+  const message = await exec.nextMessage(1_000);
+  assert.match(message.content[0].text, /等待时间到了（20ms）/);
+});
+
+test('wait 立即校验 waitMs', async () => {
+  const { tools } = await loadTools();
+  const exec = fakeExec();
+  await assert.rejects(() => tools.get('wait').execute({}, exec), /waitMs 不能为空/);
+  await assert.rejects(() => tools.get('wait').execute({ waitMs: 0 }, exec), /waitMs 必须是 1–3600000/);
+  await assert.rejects(() => tools.get('wait').execute({ waitMs: 3_600_001 }, exec), /waitMs 必须是 1–3600000/);
+});
+
 test('mc_eat / mc_mine 异步提交并投递结果', async () => {
   const { tools } = await loadTools();
   const exec = fakeExec();
@@ -377,6 +397,15 @@ test('mc_eat / mc_mine 异步提交并投递结果', async () => {
       /amount 必须是 1–2304 的整数/,
     );
   }
+});
+
+test('mc_place 发 POST place 并同步返回', async () => {
+  const { tools } = await loadTools();
+  const value = await tools.get('mc_place').execute({}, fakeExec());
+  assert.equal(lastRequest.method, 'POST');
+  assert.equal(lastRequest.url, '/op/');
+  assert.equal(lastRequest.body, 'place');
+  assert.equal(value.text, '已放置 石头');
 });
 
 test('mc_killaura 读状态与更新配置', async () => {

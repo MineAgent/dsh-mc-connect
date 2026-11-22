@@ -96,6 +96,7 @@ const KNOWN_EVENT_TYPES = Object.freeze([
   'item_pickup',
   'chat',
   'hunger_change',
+  'can_sleep',
   'baritone_task_end',
   'dimension_change',
   'player_death',

@@ -5,7 +5,7 @@
 # 并挂一个宿主全局的界面入口。
 #
 # 与已经归档的 MCPServer + MCPServerDSHPlug 方案不同，这里没有 MCP：
-# 19 个 mc_* 工具由 preset 子插件 dsh-mc-connect/tools 直接注册，用 fetch 调
+# 20 个 mc_* 工具和 1 个 wait 工具由 preset 子插件 dsh-mc-connect/tools 直接注册，用 fetch 调
 # 127.0.0.1:3420 上的 /ctl /aif /op /bt /ka；事件订阅（subscribe_mc_event /
 # get_mc_event_types）也在同一个 preset 插件里，监听 127.0.0.1:3422。
 # 不再有 mcp-client，也没有子进程。
